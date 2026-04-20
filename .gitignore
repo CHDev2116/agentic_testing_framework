@@ -1,0 +1,20 @@
+# Python 產生的緩存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虛擬環境
+venv/
+env/
+.env
+
+# 測試報告 (我們只留資料夾，不留內容)
+results/*.json
+
+# 操作系統產生的垃圾
+.DS_Store
+Thumbs.db
+
+# 妳的照片資料夾 (如果妳不想上傳大量照片)
+test_images/
+!test_images/sample.jpg  # 如果妳想留一張樣板，可以用感嘆號排除
