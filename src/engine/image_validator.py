@@ -3,26 +3,26 @@ import numpy as np
 
 class ImageQualityValidator:
     def __init__(self, brightness_threshold=0.7, dark_threshold=0.7):
-        # 設定閾值：例如若 70% 的像素都太亮，則判定為過曝
+        # Threshold rule: if 70% of pixels are too bright, mark as overexposed.
         self.brightness_threshold = brightness_threshold
         self.dark_threshold = dark_threshold
 
     def analyze_exposure(self, image_path):
-        # 1. 讀取影像並轉為灰階（因為我們只關心亮度）
+        # 1. Load image and convert to grayscale (only brightness matters here).
         img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
         if img is None:
             return "Error: Image not found"
 
-        # 2. 計算直方圖 (0-255)
+        # 2. Compute histogram (0-255).
         hist = cv2.calcHist([img], [0], None, [256], [0, 256])
         
-        # 3. 正規化直方圖（轉為百分比）
+        # 3. Normalize histogram to percentages.
         hist_norm = hist / hist.sum()
 
-        # 4. 統計分析
-        # 判定過暗：像素值在 0-50 之間的比例
+        # 4. Statistical checks.
+        # Dark check: ratio of pixels in range 0-50.
         dark_pixels = np.sum(hist_norm[:50])
-        # 判定過曝：像素值在 205-255 之間的比例
+        # Bright check: ratio of pixels in range 205-255.
         bright_pixels = np.sum(hist_norm[205:])
 
         result = {
@@ -31,7 +31,7 @@ class ImageQualityValidator:
             "verdict": "Pass"
         }
 
-        # 5. 規則驗證
+        # 5. Rule validation.
         if dark_pixels > self.dark_threshold:
             result["verdict"] = "Fail: Too Dark"
         elif bright_pixels > self.brightness_threshold:
@@ -39,6 +39,6 @@ class ImageQualityValidator:
             
         return result
 
-# 測試使用
+# Test usage:
 # validator = ImageQualityValidator()
 # print(validator.analyze_exposure("test_photo.jpg"))

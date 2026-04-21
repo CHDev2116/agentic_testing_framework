@@ -1,0 +1,15 @@
+{
+    "model_settings": {
+        "name": "PixelQA-Llama-4bit",
+        "bit_depth": 4
+    },
+    "thresholds": {
+        "min_sharpness": 20.0,
+        "min_brightness": 40.0,
+        "max_brightness": 220.0
+    },
+    "folders": {
+        "input": "test_images",
+        "output": "results"
+    }
+}

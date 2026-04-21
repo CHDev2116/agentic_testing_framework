@@ -1,4 +1,4 @@
 # Code Review Standards
-- 所有的 Python 異步函數必須包含詳細的 Logging。
-- 測試腳本必須包含對 API Timeout 的處理。
-- 模型量化參數必須明確註釋其實驗依據。
+- All Python async functions must include detailed logging.
+- Test scripts must include API timeout handling.
+- Quantization parameters must clearly document their experimental rationale.

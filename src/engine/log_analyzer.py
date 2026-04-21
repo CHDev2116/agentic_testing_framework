@@ -1,45 +1,45 @@
 class LogAnalyzer:
     def __init__(self, error_tolerance: int):
         """
-        error_tolerance (k): 窗口內允許出現的最大錯誤(E)次數
+        error_tolerance (k): Maximum number of errors (E) allowed in the window.
         """
         self.k = error_tolerance
 
     def find_max_stable_sequence(self, logs: str) -> int:
         """
-        輸入：logs = "SSSESSS" (S=Success, E=Error)
-        輸出：在容忍 k 個錯誤下，最長的連續測試序列長度
+        Input: logs = "SSSESSS" (S=Success, E=Error)
+        Output: The longest consecutive test sequence length while tolerating k errors.
         """
         left = 0
         max_length = 0
-        error_count = 0  # 直接追蹤錯誤次數，比維護字典更高效
+        error_count = 0  # Track error count directly for better efficiency than a map.
 
         for right in range(len(logs)):
-            # 如果遇到 Error，增加計數
+            # If the current status is Error, increase the counter.
             if logs[right] == 'E':
                 error_count += 1
             
-            # 當錯誤超過容忍度，收縮左側窗口
+            # Shrink the left boundary when error count exceeds tolerance.
             while error_count > self.k:
                 if logs[left] == 'E':
                     error_count -= 1
                 left += 1
             
-            # 更新最大長度
+            # Update the maximum valid window size.
             max_length = max(max_length, right - left + 1)
             
         return max_length
 
 if __name__ == "__main__":
-    # 模擬 ai_quality_agent 跑完後的結果串
+    # Simulated result string after ai_quality_agent execution.
     # S = Success, E = Error
     test_logs = "SSSESSS" 
     
-    # 容忍 1 個錯誤
+    # Tolerate one error.
     analyzer = LogAnalyzer(error_tolerance=1)
     stable_length = analyzer.find_max_stable_sequence(test_logs)
     
-    print(f"測試 Log: {test_logs}")
-    print(f"在容忍 {analyzer.k} 個錯誤下，最長穩定區間為: {stable_length}")
+    print(f"Test log: {test_logs}")
+    print(f"Longest stable segment with tolerance {analyzer.k}: {stable_length}")
     
-    # 預期結果：SSSESSS 裡面，包含一個 E 的最長區間就是整段，長度應為 7
+    # Expected result: In SSSESSS, the full sequence includes one E, so length should be 7.

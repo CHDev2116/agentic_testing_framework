@@ -1,20 +1,20 @@
-# Python 產生的緩存
+# Python-generated cache
 __pycache__/
 *.py[cod]
 *$py.class
 
-# 虛擬環境
+# Virtual environments
 venv/
 env/
 .env
 
-# 測試報告 (我們只留資料夾，不留內容)
+# Test reports (keep folder, ignore report files)
 results/*.json
 
-# 操作系統產生的垃圾
+# OS-generated junk files
 .DS_Store
 Thumbs.db
 
-# 妳的照片資料夾 (如果妳不想上傳大量照片)
+# Your photo folder (if you do not want to upload many photos)
 test_images/
-!test_images/sample.jpg  # 如果妳想留一張樣板，可以用感嘆號排除
+!test_images/sample.jpg  # Keep one sample image using a negation rule.

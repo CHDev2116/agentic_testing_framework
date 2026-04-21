@@ -3,42 +3,42 @@ class LlamaQuantizer:
         self.thresholds = thresholds
 
     def predict_quality(self, metrics):
-        # 1. 提取物理指標
+        # 1. Extract physical metrics.
         sharpness = metrics.get("sharpness", 0)
         brightness = metrics.get("avg_brightness", 0)
         
-        # 2. 從設定檔讀取門檻 (給予預設值以防萬一)
+        # 2. Read thresholds from config with safe defaults.
         min_s = self.thresholds.get("min_sharpness", 20.0)
         min_b = self.thresholds.get("min_brightness", 45.0)
         max_b = self.thresholds.get("max_brightness", 220.0)
 
-        # 3. 【第一層邏輯：物理環境判定】
-        # 如果亮度極端，則銳利度數據不可信，優先報亮度錯誤
+        # 3. First-layer logic: physical environment validation.
+        # If brightness is extreme, sharpness is unreliable.
         if brightness < min_b:
             return {
                 "decision": "Under-exposed",
                 "code": "ERR_LIGHT_DARK_002",
-                "msg": f"環境過暗 ({brightness:.2f})，銳利度檢測已失效。"
+                "msg": f"Environment is too dark ({brightness:.2f}); sharpness check is invalid."
             }
         elif brightness > max_b:
             return {
                 "decision": "Over-exposed",
                 "code": "ERR_LIGHT_BRGT_003",
-                "msg": f"環境過亮/爆光 ({brightness:.2f})，無法測量邊緣細節。"
+                "msg": f"Environment is too bright/overexposed ({brightness:.2f}); edge detail cannot be measured."
             }
 
-        # 4. 【第二層邏輯：光學品質判定】
-        # 只有在光線正常的情況下，才檢查銳利度
+        # 4. Second-layer logic: optical quality validation.
+        # Check sharpness only under valid lighting conditions.
         if sharpness < min_s:
             return {
                 "decision": "Blurry",
                 "code": "ERR_OPTIC_SHRP_001",
-                "msg": f"銳利度 {sharpness:.2f} 低於門檻 {min_s}。"
+                "msg": f"Sharpness {sharpness:.2f} is below threshold {min_s}."
             }
             
-        # 5. 通過所有檢查
+        # 5. Passed all checks.
         return {
             "decision": "Optimal",
             "code": "SUCCESS_200",
-            "msg": "品質符合 4-bit 模型推論標準。"
+            "msg": "Quality meets 4-bit model inference standards."
         }
