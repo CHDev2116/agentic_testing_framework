@@ -14,11 +14,11 @@ All experiments are reproducible via fixed config profiles and a deterministic p
 
 Current state:
 - **Real**: image metrics are computed from real files (brightness/sharpness).
-- **Simulated**: model decision is currently rule-based (not a live LLM/VLM endpoint yet).
+- **Model inference**: supports `simulated`, `ollama_vision`, and `mock_api` backends (config-driven).
 
 Next integration:
-- Connect inference to **Ollama**.
-- Swap in a **LLaMA-family vision-capable model** (or equivalent multimodal model).
+- Connect inference to **Ollama** for live local multimodal inference.
+- Optionally connect to a **mock API** for service integration tests.
 - Keep the same three-layer architecture so ranking, decision, and benchmarking stay reusable.
 
 ## 🛠️ Technical Highlights
@@ -83,6 +83,12 @@ python3 src/ai_quality_agent.py --compare-profiles dev benchmark
 
 # Repeatability test: same image set, run 5 times, report variance
 python3 src/ai_quality_agent.py --repeatability-test dev --repeatability-runs 5
+
+# Temporary backend override (without editing config files)
+python3 src/ai_quality_agent.py --profile benchmark --inference-backend mock_api
+
+# Optional performance deep-dive (latency vs image size + simple CPU usage)
+python3 src/ai_quality_agent.py --profile dev --performance-analysis
 ```
 
 Notes:
@@ -90,7 +96,39 @@ Notes:
 - `--config` accepts either an absolute path or a project-root-relative path
 - `--compare-profiles` runs each profile and creates `results/comparisons/profile_comparison_*.json`
 - `--repeatability-test` runs the same profile repeatedly and writes `results/repeatability/repeatability_*.json`
+- `--inference-backend` overrides backend at runtime (`simulated`, `ollama_vision`, `mock_api`)
+- `--performance-analysis` writes `results/performance/performance_*.json` with latency-size and CPU summaries
 - Reports are auto-cleaned when older than 14 days
+
+### 🔌 Real Inference Backends
+
+Inference backend is configured via `model_settings.inference.backend`:
+- `simulated` (default): rule-based inference.
+- `ollama_vision`: live inference through local Ollama endpoint.
+- `mock_api`: external API endpoint for integration testing.
+
+Example backend config:
+
+```json
+"model_settings": {
+  "inference": {
+    "backend": "ollama_vision",
+    "fallback_to_simulated": true,
+    "ollama": {
+      "host": "http://localhost:11434",
+      "model": "llava:7b",
+      "timeout_s": 45
+    },
+    "mock_api": {
+      "url": "http://localhost:8080/infer",
+      "timeout_s": 10,
+      "api_key_env": "MOCK_INFER_API_KEY"
+    }
+  }
+}
+```
+
+When backend calls fail, the pipeline can fallback to `simulated` inference if `fallback_to_simulated` is enabled.
 
 ## 📤 Output Example
 

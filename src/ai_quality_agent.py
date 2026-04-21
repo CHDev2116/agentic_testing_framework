@@ -15,7 +15,7 @@ from eval.benchmark_evaluator import (
     generate_benchmark_insights,
     get_release_decision,
 )
-from models.llama_quantizer import LlamaQuantizer
+from models.inference_adapter import build_inference_engine
 
 DEFAULT_CONFIG = {
     "model_settings": {"name": "Default-Model", "bit_depth": 4},
@@ -155,9 +155,10 @@ class QuantizedVisionAgent:
     def __init__(self, config):
         self.config = config
         self.model_info = config["model_settings"]
-        self.brain = LlamaQuantizer(thresholds=config["thresholds"])
+        self.inference_engine = build_inference_engine(config)
         self.oom_probability = float(config.get("runtime", {}).get("oom_probability", 0.0))
         print(f"Startup mode: {self.model_info['name']} ({self.model_info['bit_depth']}-bit)")
+        print(f"Inference backend: {self.inference_engine.backend_name}")
 
     def get_all_photos(self):
         folder_name = self.config["folders"]["input"]
@@ -182,7 +183,7 @@ class QuantizedVisionAgent:
         if metrics is None:
             return None, {"decision": "Error", "code": "ERR_SYS_IO_404", "msg": "Unable to read file"}, 0
 
-        ai_result = self.brain.predict_quality(metrics)
+        ai_result = self.inference_engine.predict_quality(photo_path, metrics)
         latency = round((time.time() - start_time) * 1000, 2)
         return metrics, ai_result, latency
 
@@ -230,8 +231,73 @@ def save_repeatability_report(repeatability_data, output_folder):
     return str(file_path)
 
 
-def run_batch_test(config_profile="dev", config_path=None, deterministic=False):
+def save_performance_report(performance_data, output_folder):
+    performance_dir = Path(output_folder) / "performance"
+    performance_dir.mkdir(parents=True, exist_ok=True)
+    file_path = performance_dir / f"performance_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(performance_data, f, indent=4, ensure_ascii=False)
+    print(f"Performance report saved to: {file_path}")
+    return str(file_path)
+
+
+def get_image_metadata(photo_path):
+    file_size_bytes = os.path.getsize(photo_path)
+    with Image.open(photo_path) as image:
+        width, height = image.size
+    return {
+        "width": int(width),
+        "height": int(height),
+        "pixel_count": int(width * height),
+        "file_size_kb": round(file_size_bytes / 1024.0, 4),
+    }
+
+
+def pearson_correlation(xs, ys):
+    if len(xs) != len(ys) or len(xs) < 2:
+        return 0.0
+    mean_x = sum(xs) / len(xs)
+    mean_y = sum(ys) / len(ys)
+    centered_x = [x - mean_x for x in xs]
+    centered_y = [y - mean_y for y in ys]
+    numerator = sum(x * y for x, y in zip(centered_x, centered_y))
+    denom_x = sum(x * x for x in centered_x) ** 0.5
+    denom_y = sum(y * y for y in centered_y) ** 0.5
+    if denom_x == 0 or denom_y == 0:
+        return 0.0
+    return round(numerator / (denom_x * denom_y), 6)
+
+
+def summarize_performance(perf_samples):
+    if not perf_samples:
+        return {}
+
+    sizes_kb = [item["file_size_kb"] for item in perf_samples]
+    latencies_ms = [item["latency_ms"] for item in perf_samples]
+    cpu_usages = [item["process_cpu_usage_pct"] for item in perf_samples]
+    pixels = [item["pixel_count"] for item in perf_samples]
+
+    return {
+        "sample_count": len(perf_samples),
+        "avg_latency_ms": round(sum(latencies_ms) / len(latencies_ms), 4),
+        "avg_process_cpu_usage_pct": round(sum(cpu_usages) / len(cpu_usages), 4),
+        "latency_vs_file_size_corr": pearson_correlation(sizes_kb, latencies_ms),
+        "latency_vs_pixel_count_corr": pearson_correlation(pixels, latencies_ms),
+    }
+
+
+def run_batch_test(
+    config_profile="dev",
+    config_path=None,
+    deterministic=False,
+    inference_backend_override=None,
+    performance_analysis=False
+):
     config, config_source = load_config(profile=config_profile, config_path=config_path)
+    if inference_backend_override:
+        config.setdefault("model_settings", {}).setdefault("inference", {})
+        config["model_settings"]["inference"]["backend"] = inference_backend_override
+        config_source = f"{config_source} + CLI(backend={inference_backend_override})"
     print(f"Loaded config source: {config_source}")
     agent = QuantizedVisionAgent(config)
     photos = agent.get_all_photos()
@@ -251,6 +317,7 @@ def run_batch_test(config_profile="dev", config_path=None, deterministic=False):
         "config_source": config_source,
         "results": []
     }
+    perf_samples = []
 
     print(f"Starting to process {len(photos)} image(s)...\n")
 
@@ -260,7 +327,12 @@ def run_batch_test(config_profile="dev", config_path=None, deterministic=False):
             if random.random() < agent.oom_probability:
                 raise MemoryError("OOM Exception")
 
+            image_meta = get_image_metadata(path)
+            cpu_start = time.process_time()
             metrics, ai_result, latency = agent.analyze_photo_quality(path)
+            cpu_delta = max(0.0, time.process_time() - cpu_start)
+            wall_delta = max(latency / 1000.0, 1e-6)
+            process_cpu_usage_pct = round((cpu_delta / wall_delta) * 100, 4)
             print(f"Processed {file_name}: [{ai_result['code']}] {ai_result['decision']} ({latency}ms)")
 
             batch_report["results"].append({
@@ -268,7 +340,15 @@ def run_batch_test(config_profile="dev", config_path=None, deterministic=False):
                 "metrics": metrics,
                 "decision": ai_result,
                 "latency_ms": latency,
+                "image_meta": image_meta,
+                "process_cpu_usage_pct": process_cpu_usage_pct,
                 "status": "SUCCESS"
+            })
+            perf_samples.append({
+                "file": file_name,
+                "latency_ms": latency,
+                "process_cpu_usage_pct": process_cpu_usage_pct,
+                **image_meta,
             })
 
         except Exception as e:
@@ -318,9 +398,20 @@ def run_batch_test(config_profile="dev", config_path=None, deterministic=False):
     batch_report["ranking"] = rankings
 
     report_path = save_batch_report(batch_report, config["folders"]["output"])
+    performance_report_path = None
+    if performance_analysis:
+        performance_report = {
+            "generated_at": datetime.now().isoformat(),
+            "profile": config_profile,
+            "summary": summarize_performance(perf_samples),
+            "samples": perf_samples,
+        }
+        performance_report_path = save_performance_report(performance_report, "results")
+
     return {
         "profile": config_profile,
         "report_path": report_path,
+        "performance_report_path": performance_report_path,
         "summary": batch_report["summary"],
         "top_ranked": top_ranking,
         "ranking": rankings,
@@ -328,11 +419,14 @@ def run_batch_test(config_profile="dev", config_path=None, deterministic=False):
     }
 
 
-def run_profile_comparison(profiles):
+def run_profile_comparison(profiles, inference_backend_override=None):
     profile_outputs = []
     for profile in profiles:
         print(f"\nRunning profile: {profile}")
-        result = run_batch_test(config_profile=profile)
+        result = run_batch_test(
+            config_profile=profile,
+            inference_backend_override=inference_backend_override
+        )
         if result:
             profile_outputs.append(result)
 
@@ -366,12 +460,16 @@ def run_profile_comparison(profiles):
     return comparison_report
 
 
-def run_repeatability_test(profile, runs=5):
+def run_repeatability_test(profile, runs=5, inference_backend_override=None):
     print(f"\nRunning repeatability test: profile={profile}, runs={runs}")
     run_outputs = []
     for run_idx in range(1, runs + 1):
         print(f"\nRepeatability run {run_idx}/{runs}")
-        run_result = run_batch_test(config_profile=profile, deterministic=True)
+        run_result = run_batch_test(
+            config_profile=profile,
+            deterministic=True,
+            inference_backend_override=inference_backend_override
+        )
         if run_result:
             run_result["run_index"] = run_idx
             run_outputs.append(run_result)
@@ -458,10 +556,33 @@ if __name__ == "__main__":
         default=5,
         help="Number of runs for repeatability test"
     )
+    parser.add_argument(
+        "--inference-backend",
+        default=None,
+        choices=["simulated", "ollama_vision", "mock_api"],
+        help="Temporarily override inference backend without editing config"
+    )
+    parser.add_argument(
+        "--performance-analysis",
+        action="store_true",
+        help="Generate optional performance deep-dive report (latency vs image size and CPU)"
+    )
     args = parser.parse_args()
     if args.repeatability_test:
-        run_repeatability_test(args.repeatability_test, runs=max(1, args.repeatability_runs))
+        run_repeatability_test(
+            args.repeatability_test,
+            runs=max(1, args.repeatability_runs),
+            inference_backend_override=args.inference_backend
+        )
     elif args.compare_profiles:
-        run_profile_comparison(args.compare_profiles)
+        run_profile_comparison(
+            args.compare_profiles,
+            inference_backend_override=args.inference_backend
+        )
     else:
-        run_batch_test(config_profile=args.profile, config_path=args.config)
+        run_batch_test(
+            config_profile=args.profile,
+            config_path=args.config,
+            inference_backend_override=args.inference_backend,
+            performance_analysis=args.performance_analysis
+        )

@@ -8,7 +8,10 @@
     "model_settings": {
         "name": "PixelQA-Llama-4bit",
         "bit_depth": 4,
-        "quantization_format": "GGUF"
+        "quantization_format": "GGUF",
+        "inference": {
+            "backend": "ollama_vision"
+        }
     },
     "thresholds": {
         "min_sharpness": 22.0,

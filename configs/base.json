@@ -8,7 +8,21 @@
     "model_settings": {
         "name": "PixelQA-Llama-4bit",
         "bit_depth": 4,
-        "quantization_format": "GGUF"
+        "quantization_format": "GGUF",
+        "inference": {
+            "backend": "simulated",
+            "fallback_to_simulated": true,
+            "ollama": {
+                "host": "http://localhost:11434",
+                "model": "llava:7b",
+                "timeout_s": 45
+            },
+            "mock_api": {
+                "url": "http://localhost:8080/infer",
+                "timeout_s": 10,
+                "api_key_env": "MOCK_INFER_API_KEY"
+            }
+        }
     },
     "thresholds": {
         "min_sharpness": 20.0,
