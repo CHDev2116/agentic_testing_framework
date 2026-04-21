@@ -1,15 +1,30 @@
 {
+    "version": "1.2.0",
+    "environment": "base",
+    "metadata": {
+        "device": "M4-MacBook-Pro",
+        "author": "Cheryl"
+    },
     "model_settings": {
         "name": "PixelQA-Llama-4bit",
-        "bit_depth": 4
+        "bit_depth": 4,
+        "quantization_format": "GGUF"
     },
     "thresholds": {
         "min_sharpness": 20.0,
         "min_brightness": 40.0,
-        "max_brightness": 220.0
+        "max_brightness": 220.0,
+        "timeout_ms": 5000
     },
     "folders": {
         "input": "test_images",
-        "output": "results"
+        "output": "results/base",
+        "logs": "logs/base"
+    },
+    "runtime": {
+        "oom_probability": 0.0
+    },
+    "quality_gate": {
+        "target_pass_rate": 85.0
     }
 }

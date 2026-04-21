@@ -1,5 +1,5 @@
 {
-    "version": "1.1.0",
+    "version": "1.2.0",
     "environment": "dev",
     "metadata": {
         "device": "M4-MacBook-Pro",
@@ -26,7 +26,13 @@
     },
     "folders": {
         "input": "test_images",
-        "output": "results",
+        "output": "results/dev",
         "logs": "logs/dev"
+    },
+    "runtime": {
+        "oom_probability": 0.0
+    },
+    "quality_gate": {
+        "target_pass_rate": 80.0
     }
 }

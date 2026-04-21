@@ -8,8 +8,8 @@ venv/
 env/
 .env
 
-# Test reports (keep folder, ignore report files)
-results/*.json
+# Test reports (keep folders, ignore generated report files)
+results/**/*.json
 
 # OS-generated junk files
 .DS_Store
