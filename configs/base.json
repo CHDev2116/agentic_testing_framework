@@ -21,6 +21,15 @@
                 "url": "http://localhost:8080/infer",
                 "timeout_s": 10,
                 "api_key_env": "MOCK_INFER_API_KEY"
+            },
+            "llama_cpp": {
+                "host": "http://127.0.0.1:8080",
+                "endpoint": "/v1/chat/completions",
+                "model": "local-model",
+                "timeout_s": 45,
+                "temperature": 0.0,
+                "max_tokens": 256,
+                "use_response_format": true
             }
         }
     },

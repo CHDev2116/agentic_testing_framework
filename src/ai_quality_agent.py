@@ -620,7 +620,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--inference-backend",
         default=None,
-        choices=["simulated", "ollama_vision", "mock_api"],
+        choices=["simulated", "ollama_vision", "mock_api", "llama_cpp"],
         help="Temporarily override inference backend without editing config"
     )
     parser.add_argument(

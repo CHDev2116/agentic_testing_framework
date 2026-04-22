@@ -9,6 +9,9 @@
         "name": "PixelQA-Llama-4bit",
         "bit_depth": 4,
         "quantization_format": "GGUF",
+        "inference": {
+            "backend": "llama_cpp"
+        },
         "quantization_type": "Q4_K_M",
         "runtime_args": {
             "n_threads": 8,
