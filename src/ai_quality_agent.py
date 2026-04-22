@@ -10,6 +10,11 @@ from statistics import pvariance
 from PIL import Image, ImageDraw
 
 from engine.vision_math import calculate_metrics
+from eval.arbitrator import (
+    aggregate_batch_decisions,
+    arbitrate_decision,
+    merge_gate_and_arbitration,
+)
 from eval.benchmark_evaluator import (
     build_rankings,
     generate_benchmark_insights,
@@ -22,7 +27,12 @@ DEFAULT_CONFIG = {
     "thresholds": {"min_sharpness": 20, "min_brightness": 45, "max_brightness": 220},
     "folders": {"input": "test_images", "output": "results"},
     "runtime": {"oom_probability": 0.0},
-    "quality_gate": {"target_pass_rate": 90.0}
+    "quality_gate": {"target_pass_rate": 90.0},
+    "eval_settings": {
+        "conflict_strategy": "conservative",
+        "weights": {"engine_weight": 0.6, "model_weight": 0.4},
+        "auto_tag_conflicts": True,
+    },
 }
 REPORT_RETENTION_DAYS = 14
 
@@ -371,7 +381,55 @@ def run_batch_test(
     avg_lat = sum(successful_latencies) / len(successful_latencies) if successful_latencies else 0
 
     rankings = build_rankings(batch_report["results"], config["thresholds"])
-    decision, decision_reason = get_release_decision(pass_rate, avg_lat, config)
+    gate_decision, gate_reason = get_release_decision(pass_rate, avg_lat, config)
+
+    eval_settings = config.get("eval_settings", {})
+    conflict_strategy = eval_settings.get("conflict_strategy", "conservative")
+    auto_tag_conflicts = bool(eval_settings.get("auto_tag_conflicts", True))
+    thresholds_cfg = config.get("thresholds", {})
+
+    per_image_releases = []
+    for row in batch_report["results"]:
+        if row.get("status") != "SUCCESS":
+            per_image_releases.append("NO_GO")
+            continue
+        metrics = row.get("metrics")
+        ai_result = row.get("decision", {})
+        if not isinstance(metrics, dict) or not isinstance(ai_result, dict):
+            per_image_releases.append("NO_GO")
+            continue
+        engine_metrics = {
+            "avg_brightness": metrics.get("avg_brightness", metrics.get("brightness", 0.0)),
+            "sharpness": metrics.get("sharpness", 0.0),
+        }
+        model_inference = {
+            "decision": ai_result.get("decision"),
+            "status": ai_result.get("decision"),
+            "confidence": ai_result.get("confidence"),
+        }
+        release, conflict_enum = arbitrate_decision(
+            engine_metrics, model_inference, thresholds_cfg
+        )
+        per_image_releases.append(release)
+        if auto_tag_conflicts:
+            raw_c = ai_result.get("confidence")
+            conf_val = float(raw_c) if raw_c is not None else None
+            row["arbitration"] = {
+                "release_decision": release,
+                "conflict": conflict_enum.value,
+                **({"model_confidence": conf_val} if conf_val is not None else {}),
+            }
+
+    arbitration_batch = aggregate_batch_decisions(per_image_releases, conflict_strategy)
+    decision = merge_gate_and_arbitration(
+        gate_decision, arbitration_batch, conflict_strategy
+    )
+    decision_reason = (
+        f"Quality gate: {gate_reason} "
+        f"(gate={gate_decision}) | Arbitration aggregate: {arbitration_batch} "
+        f"(merged={decision}, strategy={conflict_strategy})"
+    )
+
     top_ranking = rankings[:3]
 
     print("\n" + "=" * 55)
@@ -379,7 +437,8 @@ def run_batch_test(
     print(f"  - Total tests: {total}")
     print(f"  - Pass rate (Optimal): {pass_rate:.1f}%")
     print(f"  - Average latency: {avg_lat:.2f} ms")
-    print(f"  - Release decision: {decision}")
+    print(f"  - Release decision (arbitrated): {decision}")
+    print(f"    (gate={gate_decision}, arbitration_batch={arbitration_batch})")
     print("-" * 55)
     print("Top ranking:")
     for item in top_ranking:
@@ -393,7 +452,9 @@ def run_batch_test(
         "target_pass_rate": float(config.get("quality_gate", {}).get("target_pass_rate", 90.0)),
         "avg_latency_ms": round(avg_lat, 2),
         "release_decision": decision,
-        "decision_reason": decision_reason
+        "release_decision_gate": gate_decision,
+        "release_decision_arbitration": arbitration_batch,
+        "decision_reason": decision_reason,
     }
     batch_report["ranking"] = rankings
 

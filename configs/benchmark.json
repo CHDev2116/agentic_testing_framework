@@ -29,5 +29,13 @@
     },
     "quality_gate": {
         "target_pass_rate": 95.0
+    },
+    "eval_settings": {
+        "conflict_strategy": "conservative",
+        "weights": {
+            "engine_weight": 0.6,
+            "model_weight": 0.4
+        },
+        "auto_tag_conflicts": true
     }
 }

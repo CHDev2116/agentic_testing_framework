@@ -8,7 +8,7 @@ import requests
 from models.llama_quantizer import LlamaQuantizer
 
 
-def _normalize_result(result: Dict[str, Any], default_msg: str) -> Dict[str, str]:
+def _normalize_result(result: Dict[str, Any], default_msg: str) -> Dict[str, Any]:
     if not isinstance(result, dict):
         return {
             "decision": "Error",
@@ -16,11 +16,17 @@ def _normalize_result(result: Dict[str, Any], default_msg: str) -> Dict[str, str
             "msg": default_msg,
         }
 
-    return {
+    normalized: Dict[str, Any] = {
         "decision": str(result.get("decision", "Error")),
         "code": str(result.get("code", "ERR_MODEL_RESPONSE_422")),
         "msg": str(result.get("msg", default_msg)),
     }
+    if result.get("confidence") is not None:
+        try:
+            normalized["confidence"] = float(result["confidence"])
+        except (TypeError, ValueError):
+            pass
+    return normalized
 
 
 class SimulatedInferenceEngine:
