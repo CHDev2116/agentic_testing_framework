@@ -45,6 +45,16 @@ Next integration:
 - **3. Provide ranking + decision**: every run outputs per-image ranking and a final release decision (`GO` / `REVIEW` / `NO_GO`).
 - **4. Keep a clear three-layer architecture**: `engine` (feature extraction), `model` (inference abstraction), `eval` (scoring + decision).
 
+## 🔄 Pipeline Flow (Engine -> Model -> Eval)
+
+```mermaid
+flowchart LR
+    A[Test Images] --> B[Engine Layer<br/>Brightness / Sharpness Metrics]
+    B --> C[Model Layer<br/>Inference Backend]
+    C --> D[Eval Layer<br/>Ranking / Arbitration / Release Decision]
+    D --> E[Reports<br/>Batch / Comparison / Repeatability / Performance]
+```
+
 ## 📂 Directory Structure
 ```text
 agentic_testing_framework/
@@ -190,6 +200,12 @@ Top ranking:
   #2 sample_bright.png | score=31.6 | Over-exposed
 =======================================================
 
+### Typical Performance on M4 Chip
+
+- Throughput: **~6.42 TPS** (measured via local llama.cpp run)
+- Typical end-to-end latency in this framework: **~4-9 ms / image** (profile and backend dependent)
+- Use `--performance-analysis` for per-run latency/CPU correlation details
+
 ## 👉 Benchmark Insights
 
 1) **Trade-off**: stricter quality thresholds improve screening confidence but reduce pass rate.  
@@ -229,13 +245,132 @@ Interpretation:
 Threshold calibration is performed per profile using benchmark feedback to balance pass-rate targets and false-positive risk.
 The architecture scales from small local test sets to larger benchmark batches by keeping feature extraction, inference abstraction, and eval logic independently extensible.
 
-Roadmap
+## 🗺️ Roadmap
 
-[ ] Multi-threading optimization: implement parallel test execution for larger datasets.
+- [x] Profile-based config system and report retention
+- [x] Multi-backend inference abstraction (`simulated` / `ollama_vision` / `mock_api` / `llama_cpp`)
+- [x] Batch quality ranking + release arbitration (`GO` / `REVIEW` / `NO_GO`)
+- [x] Repeatability and benchmark comparison workflows
+- [x] Automated JSON error reporting with retention cleanup
+- [ ] Multi-threading optimization for larger datasets
+- [ ] Extended visual analytics (OpenCV-based color/noise diagnostics)
 
-[ ] Real model integration: connect to a real Llama-3 Vision model through Ollama.
+## 🧪 Evaluation Validity
 
-[ ] Visual analytics: add OpenCV support for finer color-shift and noise analysis.
+**Goal:** make release decisions trustworthy, not just repeatable.
+
+**How validity is measured**
+- Attach ground-truth labels to test images (e.g., `Optimal`, `Under-exposed`).
+- Compute core classification metrics:
+  - Precision / Recall
+  - False Positive Rate (FPR)
+  - False Negative Rate (FNR)
+
+**Why this matters**
+- Calibrate thresholds using real error distribution.
+- Expose decision bias (too strict vs too permissive).
+- Improve both model behavior and eval logic over time.
+
+**Production policy**
+- False positives (bad images passing) are treated as higher risk than false negatives.
+- Thresholds are tuned conservatively to reduce false acceptances.
+
+**Repeatability vs robustness**
+- Repeatability validates stability under identical input.
+- Robustness requires diverse benchmark distributions (low-light, motion blur, high noise).
+
+**Performance validity extension**
+- Add tail-latency metrics (`P95` / `P99`) to capture worst-case behavior under load.
+
+**Scalability path**
+- Parallel batch execution (multi-threading / multi-processing)
+- I/O optimization for large image sets
+- Backend concurrency control for inference endpoints
+
+This allows the framework to scale from local validation to large benchmark workloads.
+
+## ⚖️ Bias & Decision Reliability
+
+**Key question:**  
+How do we ensure the system is not biased or systematically wrong?
+
+### Sources of Bias
+
+1. **Threshold Bias**
+   - Fixed brightness/sharpness thresholds may not generalize across datasets
+   - Example: low-light scenes vs artistic dark images
+
+2. **Model Bias**
+   - Quantized or lightweight models may misinterpret edge cases
+   - Example: blur mistaken as under-exposure
+
+3. **Dataset Bias**
+   - Evaluation results depend heavily on input distribution
+   - Non-representative datasets lead to misleading conclusions
+
+### Detection Strategy
+
+The system detects bias through:
+
+- **Ground-truth comparison**
+  - Compare decision outputs against labeled datasets
+
+- **Error distribution analysis**
+  - Track:
+    - False Positives (FP)
+    - False Negatives (FN)
+
+- **Conflict logging**
+  - Engine vs Model disagreement is explicitly recorded
+  - Stored for offline inspection and dataset improvement
+
+### Mitigation Strategy
+
+1. **Threshold Calibration**
+   - Adjust thresholds using benchmark datasets
+   - Optimize for acceptable FPR / FNR trade-off
+
+2. **Confidence-aware Arbitration**
+   - High-confidence model disagreement overrides borderline metric signals
+
+3. **Dataset Expansion**
+   - Include edge cases:
+     - low-light
+     - blur
+     - high noise
+     - high contrast
+
+4. **Continuous Feedback Loop**
+   - Conflict samples are reused for:
+     - config tuning
+     - model improvement
+
+### Production Principle
+
+> The system is intentionally **conservative**:
+>
+> - Prefer false negatives over false positives
+> - Avoid passing low-quality images into production
+
+### What This Guarantees
+
+- Decisions are **traceable**
+- Errors are **measurable**
+- Bias is **detectable and correctable**
+
+This transforms the system from:
+
+> "rule-based evaluation"
+
+into:
+
+> "data-driven decision infrastructure"
+
+## 🎤 Interview TL;DR
+
+- I built a config-driven image QA framework with a clear `Engine -> Model -> Eval` architecture.
+- It supports multi-backend inference (`simulated`, `ollama_vision`, `mock_api`, `llama_cpp`) and produces reproducible reports for batch, benchmark, and repeatability analysis.
+- I focused on decision reliability by adding arbitration, bias/error tracking, and automated JSON error reporting with retention cleanup.
 
 👤 Author
 Cheryl - AI Optimization & Testing Engineer

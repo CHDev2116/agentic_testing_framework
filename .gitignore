@@ -21,3 +21,6 @@ test_images/
 
 # Local model binaries
 *.gguf
+
+# Packaging artifacts
+*.egg-info/
