@@ -14,7 +14,7 @@ All experiments are reproducible via fixed config profiles and a deterministic p
 
 Current state:
 - **Real**: image metrics are computed from real files (brightness/sharpness).
-- **Model inference**: supports `simulated`, `ollama_vision`, and `mock_api` backends (config-driven).
+- **Model inference**: supports `simulated`, `ollama_vision`, `mock_api`, and `llama_cpp` backends (config-driven).
 
 Next integration:
 - Connect inference to **Ollama** for live local multimodal inference.
@@ -96,9 +96,16 @@ Notes:
 - `--config` accepts either an absolute path or a project-root-relative path
 - `--compare-profiles` runs each profile and creates `results/comparisons/profile_comparison_*.json`
 - `--repeatability-test` runs the same profile repeatedly and writes `results/repeatability/repeatability_*.json`
-- `--inference-backend` overrides backend at runtime (`simulated`, `ollama_vision`, `mock_api`)
+- `--inference-backend` overrides backend at runtime (`simulated`, `ollama_vision`, `mock_api`, `llama_cpp`)
 - `--performance-analysis` writes `results/performance/performance_*.json` with latency-size and CPU summaries
 - Reports are auto-cleaned when older than 14 days
+
+### 🚨 Automated Error Reporting
+
+- Per-file failures in batch processing automatically generate `error_report_*.json`.
+- Fatal pipeline exceptions are also captured into an error report before re-raising.
+- Error reports include timestamp, scope, profile, config source, error type/message, and traceback.
+- Error reports are saved under the configured `folders.logs` path and auto-cleaned after 14 days.
 
 ### 🔌 Real Inference Backends
 
@@ -106,6 +113,7 @@ Inference backend is configured via `model_settings.inference.backend`:
 - `simulated` (default): rule-based inference.
 - `ollama_vision`: live inference through local Ollama endpoint.
 - `mock_api`: external API endpoint for integration testing.
+- `llama_cpp`: local OpenAI-compatible endpoint served by `llama-server`.
 
 Example backend config:
 
@@ -129,6 +137,38 @@ Example backend config:
 ```
 
 When backend calls fail, the pipeline can fallback to `simulated` inference if `fallback_to_simulated` is enabled.
+
+### 🦙 llama.cpp Local Server Quickstart
+
+Start `llama-server` (in a separate terminal):
+
+```bash
+cd /Users/cheryl/public_repos/Quantization/llama.cpp/build/bin/
+
+./llama-server \
+  -m "/Users/cheryl/public_repos/agentic_testing_framework/src/models/llama-3.1-8b-Q4_K_M.gguf" \
+  -ngl -1 \
+  --port 8080 \
+  --chat-template llama3
+```
+
+Check server health:
+
+```bash
+curl http://127.0.0.1:8080/health
+```
+
+Optional connectivity smoke test:
+
+```bash
+python3 test_connection.py
+```
+
+Run framework with the dev profile (already configured to `llama_cpp`):
+
+```bash
+python3 src/ai_quality_agent.py --profile dev
+```
 
 ## 📤 Output Example
 

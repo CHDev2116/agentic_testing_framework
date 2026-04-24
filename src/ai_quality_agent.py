@@ -3,6 +3,7 @@ import json
 import os
 import random
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from statistics import pvariance
@@ -251,6 +252,44 @@ def save_performance_report(performance_data, output_folder):
     return str(file_path)
 
 
+def save_error_report(error_data, output_folder):
+    error_dir = Path(output_folder)
+    error_dir.mkdir(parents=True, exist_ok=True)
+    file_path = error_dir / f"error_report_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(error_data, f, indent=4, ensure_ascii=False)
+    print(f"Error report saved to: {file_path}")
+    deleted_count = cleanup_old_error_reports(str(error_dir))
+    if deleted_count > 0:
+        print(
+            f"Cleaned up {deleted_count} error report(s) older than "
+            f"{REPORT_RETENTION_DAYS} days."
+        )
+    return str(file_path)
+
+
+def cleanup_old_error_reports(error_folder_path, max_age_days=REPORT_RETENTION_DAYS):
+    cutoff_timestamp = time.time() - (max_age_days * 24 * 60 * 60)
+    deleted_count = 0
+
+    for file_name in os.listdir(error_folder_path):
+        if not (file_name.startswith("error_report_") and file_name.endswith(".json")):
+            continue
+
+        file_path = os.path.join(error_folder_path, file_name)
+        if not os.path.isfile(file_path):
+            continue
+
+        try:
+            if os.path.getmtime(file_path) < cutoff_timestamp:
+                os.remove(file_path)
+                deleted_count += 1
+        except OSError as e:
+            print(f"WARNING: Could not remove old error report {file_path}: {e}")
+
+    return deleted_count
+
+
 def get_image_metadata(photo_path):
     file_size_bytes = os.path.getsize(photo_path)
     with Image.open(photo_path) as image:
@@ -304,6 +343,7 @@ def run_batch_test(
     performance_analysis=False
 ):
     config, config_source = load_config(profile=config_profile, config_path=config_path)
+    error_report_dir = config.get("folders", {}).get("logs", "logs/errors")
     if inference_backend_override:
         config.setdefault("model_settings", {}).setdefault("inference", {})
         config["model_settings"]["inference"]["backend"] = inference_backend_override
@@ -363,6 +403,17 @@ def run_batch_test(
 
         except Exception as e:
             print(f"Failed to process file {file_name}: {e}")
+            error_payload = {
+                "generated_at": datetime.now().isoformat(),
+                "scope": "single_file",
+                "profile": config_profile,
+                "config_source": config_source,
+                "file": file_name,
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "traceback": traceback.format_exc(),
+            }
+            save_error_report(error_payload, error_report_dir)
             batch_report["results"].append({
                 "file": file_name,
                 "status": "FAILED",
@@ -629,21 +680,42 @@ if __name__ == "__main__":
         help="Generate optional performance deep-dive report (latency vs image size and CPU)"
     )
     args = parser.parse_args()
-    if args.repeatability_test:
-        run_repeatability_test(
-            args.repeatability_test,
-            runs=max(1, args.repeatability_runs),
-            inference_backend_override=args.inference_backend
-        )
-    elif args.compare_profiles:
-        run_profile_comparison(
-            args.compare_profiles,
-            inference_backend_override=args.inference_backend
-        )
-    else:
-        run_batch_test(
-            config_profile=args.profile,
-            config_path=args.config,
-            inference_backend_override=args.inference_backend,
-            performance_analysis=args.performance_analysis
-        )
+    try:
+        if args.repeatability_test:
+            run_repeatability_test(
+                args.repeatability_test,
+                runs=max(1, args.repeatability_runs),
+                inference_backend_override=args.inference_backend
+            )
+        elif args.compare_profiles:
+            run_profile_comparison(
+                args.compare_profiles,
+                inference_backend_override=args.inference_backend
+            )
+        else:
+            run_batch_test(
+                config_profile=args.profile,
+                config_path=args.config,
+                inference_backend_override=args.inference_backend,
+                performance_analysis=args.performance_analysis
+            )
+    except Exception as e:
+        try:
+            fallback_profile = args.profile if hasattr(args, "profile") else "dev"
+            config, config_source = load_config(profile=fallback_profile, config_path=args.config)
+            error_report_dir = config.get("folders", {}).get("logs", "logs/errors")
+        except Exception:
+            config_source = "UNKNOWN"
+            error_report_dir = "logs/errors"
+
+        fatal_error_payload = {
+            "generated_at": datetime.now().isoformat(),
+            "scope": "pipeline_fatal",
+            "profile": getattr(args, "profile", "UNKNOWN"),
+            "config_source": config_source,
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "traceback": traceback.format_exc(),
+        }
+        save_error_report(fatal_error_payload, error_report_dir)
+        raise
