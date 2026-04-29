@@ -99,6 +99,15 @@ python3 src/ai_quality_agent.py --profile benchmark --inference-backend mock_api
 
 # Optional performance deep-dive (latency vs image size + simple CPU usage)
 python3 src/ai_quality_agent.py --profile dev --performance-analysis
+
+# One-command stress benchmark (auto-expand input set to >=100 images)
+python3 src/ai_quality_agent.py --profile dev --stress-test-100 --performance-analysis
+
+# Lightweight overhead audit for framework self-cost
+python3 src/ai_quality_agent.py --profile dev --overhead-analysis
+
+# Vector retrieval smoke test for failure-memory cases
+python3 src/test_failure_memory_retrieval.py
 ```
 
 Notes:
@@ -108,6 +117,12 @@ Notes:
 - `--repeatability-test` runs the same profile repeatedly and writes `results/repeatability/repeatability_*.json`
 - `--inference-backend` overrides backend at runtime (`simulated`, `ollama_vision`, `mock_api`, `llama_cpp`)
 - `--performance-analysis` writes `results/performance/performance_*.json` with latency-size and CPU summaries
+- `--stress-test-100` auto-generates synthetic image variants to reach at least 100 images for stable trend analysis
+- `--overhead-analysis` writes `results/overhead/overhead_*.json` to quantify framework self-overhead vs model latency
+- `REVIEW` / `NO_GO` samples are persisted to a local ChromaDB (`results/failure_memory_db`) with multilingual sentence embeddings
+- Loopback correction is enabled for `NO_GO` + under-exposed cases (brightness +20% with `runtime.max_retry`, default `3`)
+- Loopback includes anti-drift guards: engine/model agreement check, oscillation detection, near-overexposure cutoff, and minimum brightness-gain threshold
+- Performance report includes peak process CPU/memory, tail latency (P95/P99), a correlation matrix, and auto-generated scaling insights
 - Reports are auto-cleaned when older than 14 days
 
 ### 🚨 Automated Error Reporting
