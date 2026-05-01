@@ -382,6 +382,49 @@ def classify_exposure_signal(ai_result):
     return "other"
 
 
+def classify_loopback_signal(ai_result):
+    exposure_signal = classify_exposure_signal(ai_result)
+    if exposure_signal in {"under", "over"}:
+        return exposure_signal
+    decision_text = str((ai_result or {}).get("decision", "")).lower()
+    msg_text = str((ai_result or {}).get("msg", "")).lower()
+    merged = f"{decision_text} {msg_text}"
+    if "blurry" in merged or "out-of-focus" in merged or "sharpness" in merged:
+        return "blurry"
+    return "other"
+
+
+def decide_loopback_action(signal, engine_metrics, thresholds_cfg, loopback_guard_cfg):
+    brightness = float(engine_metrics.get("avg_brightness", engine_metrics.get("brightness", 0.0)))
+    sharpness = float(engine_metrics.get("sharpness", 0.0))
+    min_brightness = float(thresholds_cfg.get("min_brightness", 40.0))
+    max_brightness = float(thresholds_cfg.get("max_brightness", 220.0))
+    min_sharpness = float(thresholds_cfg.get("min_sharpness", 20.0))
+    overexposure_stop_ratio = float(loopback_guard_cfg.get("overexposure_stop_ratio", 0.95))
+    underexposure_stop_ratio = float(loopback_guard_cfg.get("underexposure_stop_ratio", 1.05))
+
+    if signal == "under":
+        if brightness >= min_brightness:
+            return None, "engine_disagrees_underexposed"
+        if brightness >= (max_brightness * overexposure_stop_ratio):
+            return None, "near_overexposure_guard"
+        return "brighten", "retry_scheduled"
+
+    if signal == "over":
+        if brightness <= max_brightness:
+            return None, "engine_disagrees_overexposed"
+        if brightness <= (min_brightness * underexposure_stop_ratio):
+            return None, "near_underexposure_guard"
+        return "dim", "retry_scheduled"
+
+    if signal == "blurry":
+        if sharpness >= min_sharpness:
+            return None, "engine_disagrees_blurry"
+        return "sharpen", "retry_scheduled"
+
+    return None, f"signal_not_recoverable ({signal})"
+
+
 def summarize_performance(perf_samples):
     if not perf_samples:
         return {}
@@ -564,10 +607,11 @@ def run_batch_test(
     image_processor = ImageProcessor()
     max_retry = int(config.get("runtime", {}).get("max_retry", 3))
     thresholds_cfg = config.get("thresholds", {})
-    min_brightness = float(thresholds_cfg.get("min_brightness", 40.0))
-    max_brightness = float(thresholds_cfg.get("max_brightness", 220.0))
     loopback_guard_cfg = config.get("runtime", {}).get("loopback_guard", {})
     min_brightness_gain = float(loopback_guard_cfg.get("min_brightness_gain", 4.0))
+    min_sharpness_gain = float(loopback_guard_cfg.get("min_sharpness_gain", 1.0))
+    brighten_factor = float(loopback_guard_cfg.get("brighten_factor", 1.2))
+    dim_factor = float(loopback_guard_cfg.get("dim_factor", 0.85))
     overexposure_stop_ratio = float(loopback_guard_cfg.get("overexposure_stop_ratio", 0.95))
     process = psutil.Process(os.getpid())
     batch_wall_start = time.perf_counter()
@@ -637,64 +681,87 @@ def run_batch_test(
                     "confidence": ai_result.get("confidence"),
                 }
                 release_decision, _ = arbitrate_decision(engine_metrics, model_inference, config.get("thresholds", {}))
-                exposure_signal = classify_exposure_signal(ai_result)
+                loopback_signal = classify_loopback_signal(ai_result)
                 attempt_history.append({
                     "attempt": attempt_idx + 1,
                     "image_path": current_path,
                     "model_decision": ai_result.get("decision"),
                     "error_code": ai_result.get("code"),
                     "release": release_decision,
-                    "exposure_signal": exposure_signal,
+                    "loopback_signal": loopback_signal,
                     "avg_brightness": round(float(engine_metrics.get("avg_brightness", 0.0)), 4),
+                    "sharpness": round(float(engine_metrics.get("sharpness", 0.0)), 4),
                     "latency_ms": latency,
                 })
 
                 current_brightness = float(engine_metrics.get("avg_brightness", 0.0))
+                current_sharpness = float(engine_metrics.get("sharpness", 0.0))
                 if release_decision != "NO_GO":
                     loopback_stop_reason = "release_resolved"
                     break
                 if attempt_idx >= max_retry:
                     loopback_stop_reason = "max_retry_reached"
                     break
-                if exposure_signal != "under":
-                    loopback_stop_reason = f"signal_not_under ({exposure_signal})"
-                    break
-                if current_brightness >= min_brightness:
-                    loopback_stop_reason = "engine_disagrees_underexposed"
-                    break
-                if current_brightness >= (max_brightness * overexposure_stop_ratio):
-                    loopback_stop_reason = "near_overexposure_guard"
+
+                next_action, action_stop_reason = decide_loopback_action(
+                    loopback_signal, engine_metrics, thresholds_cfg, loopback_guard_cfg
+                )
+                if not next_action:
+                    loopback_stop_reason = action_stop_reason
                     break
 
                 if len(attempt_history) >= 2:
                     prev_attempt = attempt_history[-2]
-                    prev_signal = prev_attempt.get("exposure_signal")
+                    prev_signal = prev_attempt.get("loopback_signal")
                     prev_brightness = float(prev_attempt.get("avg_brightness", 0.0))
+                    prev_sharpness = float(prev_attempt.get("sharpness", 0.0))
                     brightness_gain = current_brightness - prev_brightness
-                    if prev_signal in {"under", "over"} and prev_signal != exposure_signal:
+                    if prev_signal in {"under", "over"} and prev_signal != loopback_signal:
                         loopback_stop_reason = "oscillation_detected"
                         break
-                    if brightness_gain < min_brightness_gain:
-                        loopback_stop_reason = (
-                            f"insufficient_brightness_gain (<{min_brightness_gain})"
-                        )
+                    if next_action == "brighten" and brightness_gain < min_brightness_gain:
+                        loopback_stop_reason = f"insufficient_brightness_gain (<{min_brightness_gain})"
+                        break
+                    if next_action == "dim" and (prev_brightness - current_brightness) < min_brightness_gain:
+                        loopback_stop_reason = f"insufficient_dimming_gain (<{min_brightness_gain})"
+                        break
+                    if next_action == "sharpen" and (current_sharpness - prev_sharpness) < min_sharpness_gain:
+                        loopback_stop_reason = f"insufficient_sharpness_gain (<{min_sharpness_gain})"
                         break
 
-                should_retry = True
-                if not should_retry:
-                    break
-
-                current_path = image_processor.adjust_brightness(
-                    current_path,
-                    level=1.2,
-                    file_stem=file_stem,
-                    attempt_idx=attempt_idx + 1,
-                )
-                print(
-                    f"Loopback retry {attempt_idx + 1}/{max_retry} for {file_name}: "
-                    "detected under-exposed; brightness +20% and re-evaluate."
-                )
-                loopback_stop_reason = "retry_scheduled"
+                if next_action == "brighten":
+                    current_path = image_processor.adjust_brightness(
+                        current_path,
+                        level=brighten_factor,
+                        file_stem=file_stem,
+                        attempt_idx=attempt_idx + 1,
+                    )
+                    print(
+                        f"Loopback retry {attempt_idx + 1}/{max_retry} for {file_name}: "
+                        f"detected under-exposed; brightness x{brighten_factor} and re-evaluate."
+                    )
+                elif next_action == "dim":
+                    current_path = image_processor.adjust_brightness(
+                        current_path,
+                        level=dim_factor,
+                        file_stem=file_stem,
+                        attempt_idx=attempt_idx + 1,
+                    )
+                    print(
+                        f"Loopback retry {attempt_idx + 1}/{max_retry} for {file_name}: "
+                        f"detected over-exposed; brightness x{dim_factor} and re-evaluate."
+                    )
+                elif next_action == "sharpen":
+                    current_path = image_processor.apply_sharpen(
+                        current_path,
+                        file_stem=file_stem,
+                        attempt_idx=attempt_idx + 1,
+                    )
+                    print(
+                        f"Loopback retry {attempt_idx + 1}/{max_retry} for {file_name}: "
+                        "detected blurry signal; apply sharpen and re-evaluate."
+                    )
+                loopback_stop_reason = f"retry_scheduled ({next_action})"
 
             cpu_delta = max(0.0, time.process_time() - cpu_start)
             wall_delta = max(final_latency / 1000.0, 1e-6)
@@ -714,6 +781,9 @@ def run_batch_test(
                 "loopback": {
                     "max_retry": max_retry,
                     "min_brightness_gain": min_brightness_gain,
+                    "min_sharpness_gain": min_sharpness_gain,
+                    "brighten_factor": brighten_factor,
+                    "dim_factor": dim_factor,
                     "overexposure_stop_ratio": overexposure_stop_ratio,
                     "retry_count": max(0, len(attempt_history) - 1),
                     "stop_reason": loopback_stop_reason,

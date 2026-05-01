@@ -2,6 +2,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
 ![Pillow](https://img.shields.io/badge/Library-Pillow-orange.svg)
+[![CI](https://github.com/CHDev2116/agentic_testing_framework/actions/workflows/ci.yml/badge.svg)](https://github.com/CHDev2116/agentic_testing_framework/actions/workflows/ci.yml)
 
 ## 📌 Project Overview
 This project is an **automated testing framework** for mobile image-quality validation. It simulates how a **4-bit lightweight model (Quantized Vision Model)** can evaluate image quality in real time under resource-constrained environments such as phones.
@@ -79,6 +80,9 @@ Run from the project root:
 # Install dependencies
 pip install -r requirements.txt
 
+# (Recommended for contributors) install project with test tooling
+python3 -m pip install -e ".[dev]"
+
 # Use the development profile (configs/base.json + configs/dev.json)
 python3 src/ai_quality_agent.py --profile dev
 
@@ -120,8 +124,8 @@ Notes:
 - `--stress-test-100` auto-generates synthetic image variants to reach at least 100 images for stable trend analysis
 - `--overhead-analysis` writes `results/overhead/overhead_*.json` to quantify framework self-overhead vs model latency
 - `REVIEW` / `NO_GO` samples are persisted to a local ChromaDB (`results/failure_memory_db`) with multilingual sentence embeddings
-- Loopback correction is enabled for `NO_GO` + under-exposed cases (brightness +20% with `runtime.max_retry`, default `3`)
-- Loopback includes anti-drift guards: engine/model agreement check, oscillation detection, near-overexposure cutoff, and minimum brightness-gain threshold
+- Guardrail-driven closed loop is enabled for `NO_GO` recovery: `under-exposed` (brighten), `over-exposed` (dim), and `blurry` (sharpen), bounded by `runtime.max_retry` (default `3`)
+- Loopback guardrails include engine/model agreement checks, oscillation detection, near-over/under exposure cutoffs, and minimum brightness/sharpness gain thresholds
 - Performance report includes peak process CPU/memory, tail latency (P95/P99), a correlation matrix, and auto-generated scaling insights
 - Reports are auto-cleaned when older than 14 days
 
@@ -386,6 +390,36 @@ into:
 - I built a config-driven image QA framework with a clear `Engine -> Model -> Eval` architecture.
 - It supports multi-backend inference (`simulated`, `ollama_vision`, `mock_api`, `llama_cpp`) and produces reproducible reports for batch, benchmark, and repeatability analysis.
 - I focused on decision reliability by adding arbitration, bias/error tracking, and automated JSON error reporting with retention cleanup.
+
+## 🧪 CI/CD and Coverage
+
+- Workflow: `.github/workflows/ci.yml`
+- Stages:
+  - `lint`: `ruff check src tests`
+  - `unit tests + coverage`: `PYTHONPATH=src pytest` (produces `coverage.xml`)
+  - `report generation`: `--performance-analysis --overhead-analysis`
+  - `artifact upload`: `coverage.xml` and `results/`
+
+Local run:
+
+```bash
+pip install -r requirements.txt
+pip install pytest pytest-cov ruff
+PYTHONPATH=src pytest
+```
+
+## 🎬 Demo Screenshot / GIF
+
+Add demo media files under:
+
+- `assets/demo.gif` (recommended)
+- `assets/demo.png`
+
+Then embed with:
+
+```markdown
+![Framework Demo](assets/demo.gif)
+```
 
 👤 Author
 Cheryl - AI Optimization & Testing Engineer

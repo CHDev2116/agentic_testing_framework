@@ -13,7 +13,8 @@ class ImageProcessor:
         with Image.open(image_path) as img:
             enhancer = ImageEnhance.Brightness(img)
             adjusted = enhancer.enhance(level)
-            output_path = self.output_dir / f"{file_stem}_retry{attempt_idx}_bright.png"
+            mode_suffix = "bright" if float(level) >= 1.0 else "dim"
+            output_path = self.output_dir / f"{file_stem}_retry{attempt_idx}_{mode_suffix}.png"
             adjusted.save(output_path)
         return os.fspath(output_path)
 
