@@ -1,11 +1,8 @@
 import os
+from importlib import import_module
 from datetime import datetime, timezone
 
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
-
-import chromadb
-from sklearn.feature_extraction.text import HashingVectorizer
-from sentence_transformers import SentenceTransformer
 
 
 class FailureMemoryStore:
@@ -17,12 +14,25 @@ class FailureMemoryStore:
     ):
         self.persist_dir = persist_dir
         os.makedirs(self.persist_dir, exist_ok=True)
+        chromadb = import_module("chromadb")
         self.client = chromadb.PersistentClient(path=self.persist_dir)
         self.collection = self.client.get_or_create_collection(name=collection_name)
         self.encoder = None
-        self.fallback_encoder = HashingVectorizer(n_features=384, alternate_sign=False, norm="l2")
+        hashing_vectorizer_cls = getattr(
+            import_module("sklearn.feature_extraction.text"),
+            "HashingVectorizer",
+        )
+        self.fallback_encoder = hashing_vectorizer_cls(
+            n_features=384,
+            alternate_sign=False,
+            norm="l2",
+        )
         try:
-            self.encoder = SentenceTransformer(embedding_model)
+            sentence_transformer_cls = getattr(
+                import_module("sentence_transformers"),
+                "SentenceTransformer",
+            )
+            self.encoder = sentence_transformer_cls(embedding_model)
         except Exception as e:
             print(f"WARNING: Could not load sentence-transformers model ({e}). Using local fallback embeddings.")
 
