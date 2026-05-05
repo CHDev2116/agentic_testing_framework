@@ -4,13 +4,56 @@
 ![Pillow](https://img.shields.io/badge/Library-Pillow-orange.svg)
 [![CI](https://github.com/CHDev2116/agentic_testing_framework/actions/workflows/ci.yml/badge.svg)](https://github.com/CHDev2116/agentic_testing_framework/actions/workflows/ci.yml)
 
-## ⚡ 3-Line Summary
+A practical framework to automatically decide whether images are production-ready (`GO` / `REVIEW` / `NO_GO`).
+
+Designed for engineers in mobile imaging, model evaluation, and production QA pipelines.
+
+## 🚀 Quick Start
+
+```bash
+# 1) Clone
+git clone https://github.com/CHDev2116/agentic_testing_framework
+cd agentic_testing_framework
+
+# 2) Install
+pip install -r requirements.txt
+
+# 3) Run (Dev profile)
+python3 src/ai_quality_agent.py --profile dev
+```
+
+If no images are found, sample images will be auto-generated.
+
+Expected output (example):
+
+```text
+=== Summary ===
+Test Dashboard
+- Pass rate: ~60-80%
+- Release decision: GO / REVIEW / NO_GO
+```
+
+For profile comparison, repeatability, backend override, and performance/stress commands, see the `Usage` section below.
+
+---
+
+## ⚡ What is this?
 
 - AI-powered framework for fast mobile image quality validation on constrained devices.
 - Combines physical metrics, multi-backend inference, and arbitration to output `GO` / `REVIEW` / `NO_GO`.
 - Includes guardrail-driven closed-loop recovery, benchmarking, repeatability checks, and CI automation.
 
-## 🚀 Why This Project Matters
+---
+
+## 🧪 When should you use this?
+
+- Validating mobile camera quality before release
+- Comparing quantized model outputs
+- Automating regression checks in CI
+
+---
+
+## 🚀 Why this matters
 
 Built an AI-powered image quality validation framework that can:
 
@@ -30,6 +73,33 @@ and provide traceable quality decisions for mobile camera and AI imaging pipelin
 It helps teams ship faster with clearer quality gates, lower review cost,
 and more consistent production outcomes.
 
+---
+
+## 📊 Example Output
+
+```text
+=== Summary ===
+Test Dashboard
+  - Pass rate: 66.7%
+  - Avg latency: 4.66 ms
+  - Release decision: REVIEW
+```
+
+---
+
+## 🐞 Common Issues
+
+### 1. Ollama not responding
+- Check if server is running: http://localhost:11434
+
+### 2. No images found
+- Framework will auto-generate samples
+
+### 3. Slow performance
+- Try switching to `simulated` backend
+
+---
+
 ## 📌 Project Overview
 The framework is **configuration-driven**, with quality thresholds largely decoupled from execution logic so standards can be adjusted with minimal code changes.
 
@@ -41,9 +111,9 @@ Current state:
 - **Real**: image metrics are computed from real files (brightness/sharpness).
 - **Model inference**: supports `simulated`, `ollama_vision`, `mock_api`, and `llama_cpp` backends (config-driven).
 
-Next integration:
-- Connect inference to **Ollama** for live local multimodal inference.
-- Optionally connect to a **mock API** for service integration tests.
+Next improvements:
+- Improve robustness and calibration for **Ollama** and **mock API** backends under production-like traffic.
+- Expand benchmark datasets for edge cases (low light, blur, high noise) to improve decision reliability.
 - Keep the same three-layer architecture so ranking, decision, and benchmarking stay reusable.
 
 ## 📍 Core Guarantees (Source of Truth)
@@ -245,7 +315,7 @@ Run framework with the dev profile (already configured to `llama_cpp`):
 python3 src/ai_quality_agent.py --profile dev
 ```
 
-## 📤 Output Example
+## 📤 Full Output Example
 
 Startup mode: PixelQA-Llama-4bit (4-bit)
 Starting to process 3 image(s)...
