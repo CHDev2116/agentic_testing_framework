@@ -1,9 +1,14 @@
 # src/models/gemma_filter.py
-import ollama
+from importlib import import_module
 
 class GemmaFilter:
     def __init__(self):
         self.model_name = "gemma2:2b"
+        self.ollama = None
+        try:
+            self.ollama = import_module("ollama")
+        except ModuleNotFoundError:
+            self.ollama = None
 
     def check_basic_quality(self, metrics):
         # 這裡必須縮進（4個空格）
@@ -23,7 +28,10 @@ class GemmaFilter:
         {{"pass": true, "reason": "..."}}
         """
         
-        response = ollama.chat(
+        if self.ollama is None:
+            raise RuntimeError("ollama package is not installed. Run: pip install ollama")
+
+        response = self.ollama.chat(
             model=self.model_name, 
             messages=[{'role': 'user', 'content': prompt}],
             format='json'

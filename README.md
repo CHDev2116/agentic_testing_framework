@@ -2,13 +2,108 @@
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
 ![Pillow](https://img.shields.io/badge/Library-Pillow-orange.svg)
+[![CI](https://github.com/CHDev2116/agentic_testing_framework/actions/workflows/ci.yml/badge.svg)](https://github.com/CHDev2116/agentic_testing_framework/actions/workflows/ci.yml)
+
+A practical framework to automatically decide whether images are production-ready (`GO` / `REVIEW` / `NO_GO`).
+
+Designed for engineers in mobile imaging, model evaluation, and production QA pipelines.
+
+## 🚀 Quick Start
+
+```bash
+# 1) Clone
+git clone https://github.com/CHDev2116/agentic_testing_framework
+cd agentic_testing_framework
+
+# 2) Install
+pip install -r requirements.txt
+
+# 3) Run (Dev profile)
+python3 src/ai_quality_agent.py --profile dev
+```
+
+If no images are found, sample images will be auto-generated.
+
+Expected output (example):
+
+```text
+=== Summary ===
+Test Dashboard
+- Pass rate: ~60-80%
+- Release decision: GO / REVIEW / NO_GO
+```
+
+For profile comparison, repeatability, backend override, and performance/stress commands, see the `Usage` section below.
+
+---
+
+## ⚡ What is this?
+
+- AI-powered framework for fast mobile image quality validation on constrained devices.
+- Combines physical metrics, multi-backend inference, and arbitration to output `GO` / `REVIEW` / `NO_GO`.
+- Includes guardrail-driven closed-loop recovery, benchmarking, repeatability checks, and CI automation.
+
+---
+
+## 🧪 When should you use this?
+
+- Validating mobile camera quality before release
+- Comparing quantized model outputs
+- Automating regression checks in CI
+
+---
+
+## 🚀 Why this matters
+
+Built an AI-powered image quality validation framework that can:
+
+- Evaluate mobile image quality in milliseconds
+- Support multiple inference backends
+- Make release decisions (`GO` / `REVIEW` / `NO_GO`)
+- Benchmark latency, repeatability, and bias
+- Run fully automated via CI/CD
+
+Designed for real-world constrained devices and production testing workflows.
+
+## 💼 Real-World Value
+
+This framework can reduce manual image QA effort, standardize release criteria,
+and provide traceable quality decisions for mobile camera and AI imaging pipelines.
+
+It helps teams ship faster with clearer quality gates, lower review cost,
+and more consistent production outcomes.
+
+---
+
+## 📊 Example Output
+
+```text
+=== Summary ===
+Test Dashboard
+  - Pass rate: 66.7%
+  - Avg latency: 4.66 ms
+  - Release decision: REVIEW
+```
+
+---
+
+## 🐞 Common Issues
+
+### 1. Ollama not responding
+- Check if server is running: http://localhost:11434
+
+### 2. No images found
+- Framework will auto-generate samples
+
+### 3. Slow performance
+- Try switching to `simulated` backend
+
+---
 
 ## 📌 Project Overview
-This project is an **automated testing framework** for mobile image-quality validation. It simulates how a **4-bit lightweight model (Quantized Vision Model)** can evaluate image quality in real time under resource-constrained environments such as phones.
+The framework is **configuration-driven**, with quality thresholds largely decoupled from execution logic so standards can be adjusted with minimal code changes.
 
-The framework follows a **configuration-driven** design, fully decoupling quality thresholds from execution logic so it can quickly adapt to different quantized model standards.
-
-All experiments are reproducible via fixed config profiles and a deterministic preprocessing pipeline.
+It is designed for quantized-model QA workflows where repeatability, comparability, and release governance matter as much as raw inference speed.
 
 ## 🤖 AI Honesty Statement
 
@@ -16,15 +111,28 @@ Current state:
 - **Real**: image metrics are computed from real files (brightness/sharpness).
 - **Model inference**: supports `simulated`, `ollama_vision`, `mock_api`, and `llama_cpp` backends (config-driven).
 
-Next integration:
-- Connect inference to **Ollama** for live local multimodal inference.
-- Optionally connect to a **mock API** for service integration tests.
+Next improvements:
+- Improve robustness and calibration for **Ollama** and **mock API** backends under production-like traffic.
+- Expand benchmark datasets for edge cases (low light, blur, high noise) to improve decision reliability.
 - Keep the same three-layer architecture so ranking, decision, and benchmarking stay reusable.
+
+## 📍 Core Guarantees (Source of Truth)
+
+- **Architecture**: `Engine -> Model -> Eval` with clear module boundaries.
+- **Inference backends**: `simulated`, `ollama_vision`, `mock_api`, `llama_cpp` (runtime-configurable).
+- **Decision policy**: conservative release gating (`GO` / `REVIEW` / `NO_GO`) with arbitration.
+- **Guardrail loopback**: `NO_GO` recovery supports `under` (brighten), `over` (dim), `blurry` (sharpen), bounded by retry/guard thresholds.
+- **Retention scope**: auto-clean after 14 days currently applies to `batch_report_*.json` and `error_report_*.json`.
+- **CI contract**: lint scope follows `.github/workflows/ci.yml` selected `src` paths plus `tests`.
+
+For more detail on inference providers, the primary vs demo pipeline, and optional memory profiling (`PIXELQA_MONITOR_MEMORY`), see [`docs/Architecture.md`](docs/Architecture.md).
 
 ## 🛠️ Technical Highlights
 
+Reference baseline for architecture, backend support, guardrail loopback, retention, and CI scope: see `Core Guarantees (Source of Truth)`.
+
 ### 1. Modular Architecture and Config-Driven Design
-* **Fully decoupled**: Uses `configs/*.json` to manage all test standards (sharpness/brightness thresholds), so strategies can be adjusted without code changes.
+* **Largely config-driven**: Uses `configs/*.json` to manage test standards (sharpness/brightness thresholds), so strategies can be adjusted with minimal code changes.
 * **Engine layer**: feature extraction from input images (brightness/sharpness metrics).
 * **Model layer**: inference abstraction (rule-based today, real-model adapter-ready).
 * **Eval layer**: scoring, ranking, benchmark insights, and release decision.
@@ -53,6 +161,7 @@ flowchart LR
     B --> C[Model Layer<br/>Inference Backend]
     C --> D[Eval Layer<br/>Ranking / Arbitration / Release Decision]
     D --> E[Reports<br/>Batch / Comparison / Repeatability / Performance]
+    D -- NO_GO: Guardrail Loopback --> B
 ```
 
 ## 📂 Directory Structure
@@ -79,15 +188,22 @@ Run from the project root:
 # Install dependencies
 pip install -r requirements.txt
 
-# Use the development profile (configs/base.json + configs/dev.json)
+# (Recommended for contributors) install project with test tooling
+python3 -m pip install -e ".[dev]"
+
+# Essential: run development profile once (configs/base.json + configs/dev.json)
 python3 src/ai_quality_agent.py --profile dev
 
-# Use the benchmark profile (configs/base.json + configs/benchmark.json)
+# Essential: run benchmark profile
 python3 src/ai_quality_agent.py --profile benchmark
 
-# Load a config file directly (applied on top of configs/base.json)
+# Essential: load a config file directly (applied on top of configs/base.json)
 python3 src/ai_quality_agent.py --config configs/dev.json
+```
 
+Advanced analysis:
+
+```bash
 # Compare multiple profiles and output a cross-profile ranking
 python3 src/ai_quality_agent.py --compare-profiles dev benchmark
 
@@ -99,16 +215,35 @@ python3 src/ai_quality_agent.py --profile benchmark --inference-backend mock_api
 
 # Optional performance deep-dive (latency vs image size + simple CPU usage)
 python3 src/ai_quality_agent.py --profile dev --performance-analysis
+
+# One-command stress benchmark (auto-expand input set to >=100 images)
+python3 src/ai_quality_agent.py --profile dev --stress-test-100 --performance-analysis
+
+# Lightweight overhead audit for framework self-cost
+python3 src/ai_quality_agent.py --profile dev --overhead-analysis
+
+# Vector retrieval smoke test for failure-memory cases
+python3 src/test_failure_memory_retrieval.py
 ```
 
-Notes:
+Essential Notes:
 - `--profile` supports: `dev`, `benchmark`, `base`
 - `--config` accepts either an absolute path or a project-root-relative path
+- `REVIEW` / `NO_GO` samples are persisted to a local ChromaDB (`results/failure_memory_db`) with multilingual sentence embeddings
+- Guardrail-driven closed loop is enabled for `NO_GO` recovery: `under-exposed` (brighten), `over-exposed` (dim), and `blurry` (sharpen), bounded by `runtime.max_retry` (default `3`)
+- Auto-clean currently applies to `batch_report_*.json` and `error_report_*.json` after 14 days
+
+Advanced Notes:
 - `--compare-profiles` runs each profile and creates `results/comparisons/profile_comparison_*.json`
 - `--repeatability-test` runs the same profile repeatedly and writes `results/repeatability/repeatability_*.json`
 - `--inference-backend` overrides backend at runtime (`simulated`, `ollama_vision`, `mock_api`, `llama_cpp`)
 - `--performance-analysis` writes `results/performance/performance_*.json` with latency-size and CPU summaries
-- Reports are auto-cleaned when older than 14 days
+- `--stress-test-100` auto-generates synthetic image variants to reach at least 100 images for stable trend analysis
+- `--overhead-analysis` writes `results/overhead/overhead_*.json` to quantify framework self-overhead vs model latency
+- Loopback guardrails include engine/model agreement checks, oscillation detection, near-over/under exposure cutoffs, and minimum brightness/sharpness gain thresholds
+- Performance report includes peak process CPU/memory, tail latency (P95/P99), a correlation matrix, and auto-generated scaling insights
+
+For canonical design guarantees, treat `Core Guarantees (Source of Truth)` as authoritative when wording differs elsewhere.
 
 ### 🚨 Automated Error Reporting
 
@@ -124,6 +259,8 @@ Inference backend is configured via `model_settings.inference.backend`:
 - `ollama_vision`: live inference through local Ollama endpoint.
 - `mock_api`: external API endpoint for integration testing.
 - `llama_cpp`: local OpenAI-compatible endpoint served by `llama-server`.
+
+Authoritative backend support list is maintained in `Core Guarantees (Source of Truth)`.
 
 Example backend config:
 
@@ -180,7 +317,7 @@ Run framework with the dev profile (already configured to `llama_cpp`):
 python3 src/ai_quality_agent.py --profile dev
 ```
 
-## 📤 Output Example
+## 📤 Full Output Example
 
 Startup mode: PixelQA-Llama-4bit (4-bit)
 Starting to process 3 image(s)...
@@ -208,20 +345,10 @@ Top ranking:
 
 ## 👉 Benchmark Insights
 
-1) **Trade-off**: stricter quality thresholds improve screening confidence but reduce pass rate.  
-   **Observation**: benchmark profile usually keeps similar image ordering but can produce a stricter release outcome.  
-   **Decision implication**: use benchmark profile for certification or final quality checks, and dev profile for faster iteration.
-
-2) **Trade-off**: lower latency can hide quality risk if used alone.  
-   **Observation**: one profile may be fastest while still returning `REVIEW` or `NO_GO`.  
-   **Decision implication**: select profile by combined metrics (`pass_rate` + `avg_latency_ms` + `release_decision`), not speed only.
-
-3) **Trade-off**: ranking is useful prioritization, not a release verdict by itself.  
-   **Observation**: top-ranked images can coexist with failed/under-exposed samples in the same run.  
-   **Decision implication**: keep `ranking` for debugging and prioritization, and keep `GO/REVIEW/NO_GO` as the final gate.
-
-Project alignment:
-- `--compare-profiles` now writes these insights into `results/comparisons/profile_comparison_*.json` under `benchmark_insights`.
+- Stricter thresholds usually improve screening confidence but lower pass rate.
+- Latency alone is not a release signal; combine `pass_rate`, `avg_latency_ms`, and `release_decision`.
+- Ranking is a prioritization tool, while final release still follows `GO` / `REVIEW` / `NO_GO`.
+- `--compare-profiles` exports these insights to `results/comparisons/profile_comparison_*.json` (`benchmark_insights`).
 
 ## 🔁 Repeatability Example
 
@@ -255,122 +382,62 @@ The architecture scales from small local test sets to larger benchmark batches b
 - [ ] Multi-threading optimization for larger datasets
 - [ ] Extended visual analytics (OpenCV-based color/noise diagnostics)
 
-## 🧪 Evaluation Validity
+## 🧪 Evaluation & Reliability
 
-**Goal:** make release decisions trustworthy, not just repeatable.
+- **Goal**: make release decisions trustworthy, not just repeatable.
+- **Validation**: compare against labeled data and track Precision/Recall/FPR/FNR.
+- **Bias control**: monitor threshold/model/dataset bias through conflict logging and error distribution.
+- **Mitigation**: apply threshold calibration, confidence-aware arbitration, and edge-case dataset expansion.
+- **Production policy**: conservative by design; avoid passing low-quality images even at the cost of more false negatives.
 
-**How validity is measured**
-- Attach ground-truth labels to test images (e.g., `Optimal`, `Under-exposed`).
-- Compute core classification metrics:
-  - Precision / Recall
-  - False Positive Rate (FPR)
-  - False Negative Rate (FNR)
-
-**Why this matters**
-- Calibrate thresholds using real error distribution.
-- Expose decision bias (too strict vs too permissive).
-- Improve both model behavior and eval logic over time.
-
-**Production policy**
-- False positives (bad images passing) are treated as higher risk than false negatives.
-- Thresholds are tuned conservatively to reduce false acceptances.
-
-**Repeatability vs robustness**
-- Repeatability validates stability under identical input.
-- Robustness requires diverse benchmark distributions (low-light, motion blur, high noise).
-
-**Performance validity extension**
-- Add tail-latency metrics (`P95` / `P99`) to capture worst-case behavior under load.
-
-**Scalability path**
-- Parallel batch execution (multi-threading / multi-processing)
-- I/O optimization for large image sets
-- Backend concurrency control for inference endpoints
-
-This allows the framework to scale from local validation to large benchmark workloads.
-
-## ⚖️ Bias & Decision Reliability
-
-**Key question:**  
-How do we ensure the system is not biased or systematically wrong?
-
-### Sources of Bias
-
-1. **Threshold Bias**
-   - Fixed brightness/sharpness thresholds may not generalize across datasets
-   - Example: low-light scenes vs artistic dark images
-
-2. **Model Bias**
-   - Quantized or lightweight models may misinterpret edge cases
-   - Example: blur mistaken as under-exposure
-
-3. **Dataset Bias**
-   - Evaluation results depend heavily on input distribution
-   - Non-representative datasets lead to misleading conclusions
-
-### Detection Strategy
-
-The system detects bias through:
-
-- **Ground-truth comparison**
-  - Compare decision outputs against labeled datasets
-
-- **Error distribution analysis**
-  - Track:
-    - False Positives (FP)
-    - False Negatives (FN)
-
-- **Conflict logging**
-  - Engine vs Model disagreement is explicitly recorded
-  - Stored for offline inspection and dataset improvement
-
-### Mitigation Strategy
-
-1. **Threshold Calibration**
-   - Adjust thresholds using benchmark datasets
-   - Optimize for acceptable FPR / FNR trade-off
-
-2. **Confidence-aware Arbitration**
-   - High-confidence model disagreement overrides borderline metric signals
-
-3. **Dataset Expansion**
-   - Include edge cases:
-     - low-light
-     - blur
-     - high noise
-     - high contrast
-
-4. **Continuous Feedback Loop**
-   - Conflict samples are reused for:
-     - config tuning
-     - model improvement
-
-### Production Principle
-
-> The system is intentionally **conservative**:
->
-> - Prefer false negatives over false positives
-> - Avoid passing low-quality images into production
-
-### What This Guarantees
-
-- Decisions are **traceable**
-- Errors are **measurable**
-- Bias is **detectable and correctable**
-
-This transforms the system from:
-
-> "rule-based evaluation"
-
-into:
-
-> "data-driven decision infrastructure"
+This keeps decisions traceable, measurable, and continuously improvable from local testing to larger benchmark workloads.
 
 ## 🎤 Interview TL;DR
 
 - I built a config-driven image QA framework with a clear `Engine -> Model -> Eval` architecture.
-- It supports multi-backend inference (`simulated`, `ollama_vision`, `mock_api`, `llama_cpp`) and produces reproducible reports for batch, benchmark, and repeatability analysis.
+- Core design guarantees are centralized in `Core Guarantees (Source of Truth)` to reduce documentation drift.
 - I focused on decision reliability by adding arbitration, bias/error tracking, and automated JSON error reporting with retention cleanup.
+
+## 🧪 CI/CD and Coverage
+
+- Workflow: `.github/workflows/ci.yml`
+- Stages:
+  - `lint`: `ruff check` on selected paths in `src/` plus `tests/` (same scope as workflow file)
+  - `unit tests + coverage`: `PYTHONPATH=src pytest` (produces `coverage.xml`)
+  - `report generation`: `--performance-analysis --overhead-analysis`
+  - `artifact upload`: `coverage.xml` and `results/`
+
+Local run:
+
+```bash
+pip install -r requirements.txt
+pip install pytest pytest-cov ruff
+PYTHONPATH=src pytest
+```
+
+## 🎬 Demo Screenshot / GIF
+
+Add demo media files under:
+
+- `assets/demo.gif` (recommended)
+- `assets/demo.png`
+
+Then embed with:
+
+```markdown
+![Framework Demo](assets/demo.gif)
+```
+
+## 👨‍💻 My Contributions
+
+**Independently implemented with full-stack ownership of the test lifecycle.**
+
+- 🧩 **Architecture**: designed the `Engine -> Model -> Eval` system boundaries and decision flow.
+- 🐍 **Framework Development**: implemented the Python pipeline, adapters, and guardrail-driven loopback logic.
+- 📏 **Evaluation Logic**: built arbitration, release gating, and reliability-oriented quality checks.
+- 📊 **Benchmark & Reporting**: delivered repeatability/performance analysis and JSON report outputs.
+- ⚙️ **CI/CD**: set up lint, test, coverage, and artifact workflows in GitHub Actions.
+- 📝 **Documentation**: authored and maintained technical design, usage guides, and project narratives.
 
 👤 Author
 Cheryl - AI Optimization & Testing Engineer

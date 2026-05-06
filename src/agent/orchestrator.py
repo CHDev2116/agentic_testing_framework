@@ -1,14 +1,8 @@
-import sys
-import os
 import json
-import time # 加入時間模組
+import time
 
-# 導入你剛才修改過的模型類別
-from src.models.gemma_filter import GemmaFilter
-from src.models.llama_analyst import LlamaAnalyst
-
-# 確保路徑正確
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from models.gemma_filter import GemmaFilter
+from models.llama_analyst import LlamaAnalyst
 
 class QualityOrchestrator:
     def __init__(self):

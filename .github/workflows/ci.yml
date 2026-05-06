@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - "feat/**"
+  pull_request:
+
+jobs:
+  lint-test-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov ruff
+
+      - name: Lint
+        run: |
+          ruff check \
+            src/ai_quality_agent.py \
+            src/eval \
+            src/models/inference_adapter.py \
+            src/util/failure_memory.py \
+            src/util/monitor_performance.py \
+            src/agent/orchestrator.py \
+            src/engine/image_processor.py \
+            src/test_failure_memory_retrieval.py \
+            tests
+
+      - name: Unit tests with coverage
+        run: |
+          PYTHONPATH=src pytest
+
+      - name: Generate reports
+        run: |
+          PYTHONPATH=src python src/ai_quality_agent.py --profile dev --performance-analysis --overhead-analysis
+
+      - name: Upload coverage + generated reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-reports
+          path: |
+            coverage.xml
+            results/

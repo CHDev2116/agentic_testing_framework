@@ -1,9 +1,8 @@
 import base64
 import json
 import os
+from importlib import import_module
 from typing import Any, Dict, List
-
-import requests
 
 from models.llama_quantizer import LlamaQuantizer
 
@@ -27,6 +26,16 @@ def _normalize_result(result: Dict[str, Any], default_msg: str) -> Dict[str, Any
         except (TypeError, ValueError):
             pass
     return normalized
+
+
+_REQUESTS_MODULE = None
+
+
+def _get_requests():
+    global _REQUESTS_MODULE
+    if _REQUESTS_MODULE is None:
+        _REQUESTS_MODULE = import_module("requests")
+    return _REQUESTS_MODULE
 
 
 class SimulatedInferenceEngine:
@@ -97,7 +106,7 @@ class OllamaVisionInferenceEngine:
         }
 
         try:
-            response = requests.post(
+            response = _get_requests().post(
                 f"{self.host}/api/generate", json=payload, timeout=self.timeout_s
             )
             response.raise_for_status()
@@ -146,7 +155,9 @@ class MockAPIInferenceEngine:
         }
 
         try:
-            response = requests.post(self.url, json=payload, headers=headers, timeout=self.timeout_s)
+            response = _get_requests().post(
+                self.url, json=payload, headers=headers, timeout=self.timeout_s
+            )
             response.raise_for_status()
             body = response.json()
             result = body.get("result", body)
@@ -251,11 +262,13 @@ class LlamaCppInferenceEngine:
             payload["response_format"] = {"type": "json_object"}
 
         try:
-            response = requests.post(f"{self.host}{self.endpoint}", json=payload, timeout=self.timeout_s)
+            response = _get_requests().post(
+                f"{self.host}{self.endpoint}", json=payload, timeout=self.timeout_s
+            )
             if response.status_code >= 400 and "response_format" in payload:
                 payload_without_format = dict(payload)
                 payload_without_format.pop("response_format", None)
-                response = requests.post(
+                response = _get_requests().post(
                     f"{self.host}{self.endpoint}",
                     json=payload_without_format,
                     timeout=self.timeout_s,

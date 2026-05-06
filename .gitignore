@@ -11,6 +11,13 @@ env/
 # Test reports (keep folders, ignore generated report files)
 results/**/*.json
 
+# Local run artifacts (loopback cache, vector DB, coverage)
+results/loopback_cache/
+results/failure_memory_db/
+.coverage
+coverage.xml
+htmlcov/
+
 # OS-generated junk files
 .DS_Store
 Thumbs.db

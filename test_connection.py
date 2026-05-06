@@ -1,28 +1,31 @@
 import requests
 import time
 
-def test_llama_connection():
-    url = "http://localhost:8080/v1/chat/completions"
+def test_llama_health_check(url="http://localhost:8080/v1", model="llama-3.1-8b"):
+    endpoint = f"{url}/chat/completions"
     payload = {
-        "model": "llama-3.1-8b",
-        "messages": [
-            {"role": "user", "content": "Hi"}
-        ],
-        "max_tokens": 5,        # Minimal output to save time
+        "model": model,
+        "messages": [{"role": "user", "content": "Ping"}],
+        "max_tokens": 1, 
         "temperature": 0.0
     }
     
-    print("⏳ Sending a tiny request to wake up the M4 GPU...")
-    start_time = time.time()
-    
     try:
-        response = requests.post(url, json=payload, timeout=120)
-        print(f"✅ Status Code: {response.status_code}")
-        print(f"⏱️ Response Time: {time.time() - start_time:.2f}s")
-        print(f"🤖 AI Response: {response.json()['choices'][0]['message']['content']}")
+        start = time.perf_counter() # 使用更精確的計時器
+        res = requests.post(endpoint, json=payload, timeout=30)
+        res.raise_for_status() # 直接攔截 4xx/5xx 錯誤
         
-    except Exception as e:
-        print(f"❌ Error: {e}")
+        latency = time.perf_counter() - start
+        data = res.json()
+        
+        print(f"✅ [{model}] Connected.")
+        print(f"⏱️ TTFT (Approx): {latency:.4f}s")
+        # 這裡可以整合進你的 PixelQA-Llama 效能報告中
+        
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Connection Failed: {e}")
+    except KeyError:
+        print(f"❌ Malformed Response: {res.text}")
 
 if __name__ == "__main__":
-    test_llama_connection()
+    test_llama_health_check()
