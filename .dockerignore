@@ -1,0 +1,31 @@
+# Git metadata
+.git
+.gitignore
+
+# Python cache / virtual env
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+venv/
+env/
+.env
+
+# Test / coverage artifacts
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+
+# Local outputs and generated data
+results/
+logs/
+
+# Local editor / OS files
+.DS_Store
+.vscode/
+.idea/
+
+# Large local assets not required for image build
+test_images/
+assets/
