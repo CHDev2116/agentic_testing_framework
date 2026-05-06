@@ -12,7 +12,7 @@ from statistics import pvariance
 from PIL import Image, ImageDraw, ImageEnhance
 import psutil
 
-from engine.failure_memory import FailureMemoryStore
+from util.failure_memory import FailureMemoryStore
 from engine.image_processor import ImageProcessor
 from engine.vision_math import calculate_metrics
 from eval.arbitrator import (

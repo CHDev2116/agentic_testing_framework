@@ -1,4 +1,4 @@
-from engine.failure_memory import FailureMemoryStore
+from util.failure_memory import FailureMemoryStore
 
 
 def main():

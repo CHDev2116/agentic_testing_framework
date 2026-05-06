@@ -11,6 +11,20 @@ In this codebase, **“Provider” = an inference backend implementation** behin
 - **Make failures observable** with stable `decision` / `code` / `msg` (and optional `confidence`).
 - **Optional resilience**: remote providers can fall back to `simulated` when configured.
 
+## Pipeline entry points (two tracks)
+
+**Primary — batch image QA (what the README quick start runs)**
+
+- Entry: `src/ai_quality_agent.py` (CLI) → `QuantizedVisionAgent` → engine metrics (`vision_math`) → `build_inference_engine` → evaluation / arbitration → reports, plus optional **guardrail-driven loopback** on `NO_GO`.
+
+This is the **main production-oriented path** for PixelQA-style runs.
+
+**Secondary / demo — staged agent orchestrator**
+
+- Entry: `src/agent/orchestrator.py` → `QualityOrchestrator` (e.g. Gemma-style filter → Llama-style analyst).
+
+This file models a **multi-stage LLM pipeline** for experimentation or future integration. It is **not** connected to the `ai_quality_agent` CLI by default. Readers should treat it as a **reference or second pipeline**, not the sole system entry point, unless you explicitly wire it into the batch runner.
+
 ## Where the abstraction lives
 
 - **Factory**: `build_inference_engine(config)` in `src/models/inference_adapter.py`
@@ -140,6 +154,18 @@ flowchart LR
 ```
 
 Important: **physical metrics checks** also exist outside the provider layer (engine thresholds + arbitration). Providers should not assume they are the only gate.
+
+## Performance monitoring (`src/util/monitor_performance.py`)
+
+Decorators (`monitor_performance`, `async_monitor_performance`) **always log wall-clock time** (low overhead). **Peak allocation tracking uses Python’s `tracemalloc`**, which adds cost; it is therefore **off by default** so extremely hot paths (very high call rates) are not penalized.
+
+Enable traced memory in logs when profiling:
+
+```bash
+export PIXELQA_MONITOR_MEMORY=1
+```
+
+Accepted truthy values: `1`, `true`, `yes` (case-insensitive). When unset or false, completion logs include elapsed time only.
 
 ## Adding a new Provider (checklist)
 

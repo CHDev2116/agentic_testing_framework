@@ -125,6 +125,8 @@ Next improvements:
 - **Retention scope**: auto-clean after 14 days currently applies to `batch_report_*.json` and `error_report_*.json`.
 - **CI contract**: lint scope follows `.github/workflows/ci.yml` selected `src` paths plus `tests`.
 
+For more detail on inference providers, the primary vs demo pipeline, and optional memory profiling (`PIXELQA_MONITOR_MEMORY`), see [`docs/Architecture.md`](docs/Architecture.md).
+
 ## 🛠️ Technical Highlights
 
 Reference baseline for architecture, backend support, guardrail loopback, retention, and CI scope: see `Core Guarantees (Source of Truth)`.
