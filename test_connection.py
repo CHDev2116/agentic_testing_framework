@@ -20,7 +20,7 @@ def test_llama_health_check(url="http://localhost:8080/v1", model="llama-3.1-8b"
         
         print(f"✅ [{model}] Connected.")
         print(f"⏱️ TTFT (Approx): {latency:.4f}s")
-        # 這裡可以整合進你的 PixelQA-Llama 效能報告中
+        # 這裡可以整合進 Agentic Testing Framework 的效能報告中
         
     except requests.exceptions.RequestException as e:
         print(f"❌ Connection Failed: {e}")

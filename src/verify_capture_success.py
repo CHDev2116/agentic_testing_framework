@@ -5,7 +5,7 @@ from datetime import datetime
 from engine.vision_math import calculate_metrics
 
 class QuantizedVisionAgent:
-    def __init__(self, model_name="PixelQA-Llama-4bit"):
+    def __init__(self, model_name="Agentic Testing Framework - Llama 4-bit"):
         self.model_name = model_name
         print(f"📦 Loaded quantized model: {self.model_name}")
 

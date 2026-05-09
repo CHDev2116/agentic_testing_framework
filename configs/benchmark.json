@@ -6,7 +6,7 @@
         "author": "Cheryl"
     },
     "model_settings": {
-        "name": "PixelQA-Llama-4bit",
+        "name": "Agentic Testing Framework - Llama 4-bit",
         "bit_depth": 4,
         "quantization_format": "GGUF",
         "inference": {

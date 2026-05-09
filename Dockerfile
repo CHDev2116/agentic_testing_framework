@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # 3. Copy and install dependencies
-# Note: Ensure requirements.txt is optimized for your PixelQA project
+# Note: Keep requirements.txt aligned with the Agentic Testing Framework image
 COPY requirements.txt .
 
 # CRITICAL: Build llama-cpp-python with Metal support for M4 hardware acceleration

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import random
 import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -57,12 +58,27 @@ def _extract_metrics(image: Image.Image) -> Dict[str, float]:
 
 def _analyze_mock() -> Dict[str, object]:
     time.sleep(1.0)
+    # Baseline mode intentionally simulates unstable manual-style judgments.
+    score = random.randint(48, 76)
+    confidence = round(random.uniform(0.45, 0.72), 2)
+    label = "REVIEW" if score >= 60 else "FAIL"
     return {
-        "score": 85,
-        "confidence": 0.92,
-        "label": "Acceptable",
-        "explanation": "Good lighting, slight noise detected.",
-        "raw": {"blur": 0.12, "noise": 0.08, "exposure": "normal"},
+        "score": score,
+        "confidence": confidence,
+        "label": label,
+        "explanation": (
+            "Manual-like baseline: subjective and less consistent; "
+            "this mode is for contrast against AI pipeline stability."
+        ),
+        "raw": {
+            "reviewer_note": random.choice(
+                [
+                    "Looks acceptable but uncertain under low light.",
+                    "Borderline sharpness; might require human review.",
+                    "Inconsistent judgement due to subjective threshold.",
+                ]
+            )
+        },
     }
 
 
@@ -83,7 +99,7 @@ def _normalize_real_result(report: Dict[str, object]) -> Dict[str, object]:
 
 
 def run_analysis(image: Image.Image, mode: str) -> Dict[str, object]:
-    if mode == "Mock":
+    if mode == "Manual Baseline (for contrast)":
         return _analyze_mock()
 
     orchestrator = _get_orchestrator()
@@ -139,13 +155,16 @@ def parse_llm_output(text: str) -> Dict[str, object]:
     return parsed
 
 
-st.set_page_config(page_title="AI QA Demo", layout="wide")
+st.set_page_config(page_title="Agentic Testing Framework", layout="wide")
 
-st.title("Replace Manual Image QA with AI")
+st.title("Agentic Testing Framework")
+st.markdown("Replace manual image QA with a repeatable, config-driven pipeline.")
 st.caption("From slow & inconsistent to fast & scalable")
 
 if "result" not in st.session_state:
     st.session_state["result"] = None
+if "compare_result" not in st.session_state:
+    st.session_state["compare_result"] = None
 if "selected_image" not in st.session_state:
     st.session_state["selected_image"] = None
 if "source_name" not in st.session_state:
@@ -153,11 +172,15 @@ if "source_name" not in st.session_state:
 
 with st.sidebar:
     st.header("Settings")
-    mode = st.selectbox("Analysis mode", options=["Mock", "Real Pipeline"], index=0)
+    mode = st.selectbox(
+        "Analysis mode",
+        options=["Manual Baseline (for contrast)", "AI Pipeline (real)"],
+        index=0,
+    )
     show_raw = st.checkbox("Show raw output", value=True)
     show_latency = st.checkbox("Show latency", value=True)
     use_sample = st.button("Try sample image")
-    if mode == "Real Pipeline" and QualityOrchestrator is None:
+    if mode == "AI Pipeline (real)" and QualityOrchestrator is None:
         st.warning("`src.agent.orchestrator` import failed; using fallback behavior.")
 
 uploaded_file = st.file_uploader("Upload image", type=["png", "jpg", "jpeg"])
@@ -167,12 +190,14 @@ if use_sample:
     st.session_state["selected_image"] = sample_image
     st.session_state["source_name"] = source_name
     st.session_state["result"] = None
+    st.session_state["compare_result"] = None
 elif uploaded_file is not None:
     try:
         uploaded_image = Image.open(uploaded_file).convert("RGB")
         st.session_state["selected_image"] = uploaded_image
         st.session_state["source_name"] = uploaded_file.name
         st.session_state["result"] = None
+        st.session_state["compare_result"] = None
     except UnidentifiedImageError:
         st.error("Cannot decode this file as an image. Please upload PNG/JPG.")
     except Exception as exc:
@@ -188,13 +213,34 @@ if image is not None:
         st.image(image, width="stretch")
 
     with col2:
-        st.subheader("AI Analysis")
+        st.subheader("Analysis Result")
+        if mode == "Manual Baseline (for contrast)":
+            st.caption("Baseline mode: simulates subjective/manual-style checks.")
+        else:
+            st.caption("AI mode: uses orchestrator pipeline for reproducible decisions.")
         if st.button("Analyze", type="primary"):
             start = time.time()
             with st.spinner("Running AI + rules..."):
                 result = run_analysis(image, mode)
             latency = time.time() - start
             st.session_state["result"] = {"payload": result, "latency": latency}
+            st.session_state["compare_result"] = None
+
+        if st.button("Compare Both Modes"):
+            with st.spinner("Running baseline and AI pipeline..."):
+                baseline_start = time.time()
+                baseline_result = run_analysis(image, "Manual Baseline (for contrast)")
+                baseline_latency = time.time() - baseline_start
+
+                ai_start = time.time()
+                ai_result = run_analysis(image, "AI Pipeline (real)")
+                ai_latency = time.time() - ai_start
+
+            st.session_state["compare_result"] = {
+                "baseline": {"payload": baseline_result, "latency": baseline_latency},
+                "ai": {"payload": ai_result, "latency": ai_latency},
+            }
+            st.session_state["result"] = None
 
         cached_result = st.session_state["result"]
         if cached_result:
@@ -210,6 +256,33 @@ if image is not None:
             if show_raw:
                 with st.expander("Raw output"):
                     st.json(result["raw"])
+
+        compare_result = st.session_state["compare_result"]
+        if compare_result:
+            st.markdown("### Side-by-side Comparison")
+            compare_left, compare_right = st.columns(2)
+
+            baseline = compare_result["baseline"]
+            ai = compare_result["ai"]
+
+            with compare_left:
+                st.markdown("**Manual Baseline**")
+                st.metric("Score", f"{baseline['payload']['score']}/100")
+                st.metric("Confidence", f"{baseline['payload']['confidence']:.2f}")
+                st.write(f"Label: {baseline['payload']['label']}")
+                if show_latency:
+                    st.write(f"Latency: {baseline['latency']:.2f}s")
+
+            with compare_right:
+                st.markdown("**AI Pipeline**")
+                st.metric("Score", f"{ai['payload']['score']}/100")
+                st.metric("Confidence", f"{ai['payload']['confidence']:.2f}")
+                st.write(f"Label: {ai['payload']['label']}")
+                if show_latency:
+                    st.write(f"Latency: {ai['latency']:.2f}s")
+
+            delta_score = ai["payload"]["score"] - baseline["payload"]["score"]
+            st.info(f"AI minus Baseline score delta: {delta_score:+.0f} points")
 else:
     st.info("Upload an image or click 'Try sample image' to start.")
 
@@ -217,15 +290,15 @@ st.divider()
 st.subheader("Impact")
 left, right = st.columns(2)
 with left:
-    st.markdown("### Before")
-    st.write("- Manual QA")
-    st.write("- Slow (minutes per image)")
-    st.write("- Inconsistent results")
+    st.markdown("### Before: Manual / Subjective Checks")
+    st.write("- Human judgment varies by reviewer")
+    st.write("- Hard to keep thresholds consistent")
+    st.write("- Slower and less traceable decisions")
 with right:
-    st.markdown("### After")
-    st.write("- Automated AI QA")
-    st.write("- Seconds per image")
-    st.write("- Consistent and scalable")
+    st.markdown("### After: AI Pipeline Decisions")
+    st.write("- Config-driven, repeatable decision policy")
+    st.write("- Structured output for audit and CI")
+    st.write("- Fast, scalable, and easier to govern")
 
 st.divider()
 st.subheader("How It Works")

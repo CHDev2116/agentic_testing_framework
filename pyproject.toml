@@ -1,6 +1,7 @@
 [project]
 name = "agentic_testing_framework"
 version = "0.1.0"
+description = "Configuration-driven image QA with release gating (GO / REVIEW / NO_GO) and multi-backend inference."
 dependencies = [
     "requests",
 ]

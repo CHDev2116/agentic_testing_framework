@@ -6,18 +6,6 @@
 
 Configuration-driven framework to evaluate image quality and make production release decisions: `GO` / `REVIEW` / `NO_GO`.
 
-## Demo Preview
-
-![Framework Demo](assets/demo.gif)
-
-If GIF is not available yet, add a screenshot as `assets/demo.png` and switch the path above.
-
-## Why This Project
-
-- Automates repetitive image QA with consistent decision policy.
-- Supports multiple inference backends (`simulated`, `ollama_vision`, `mock_api`, `llama_cpp`).
-- Keeps results traceable with ranking, reports, and guardrail-driven recovery.
-
 ## Quick Start (CLI Pipeline)
 
 ```bash
@@ -29,23 +17,79 @@ python3 src/ai_quality_agent.py --profile dev
 
 If no input images are present, sample images are auto-generated.
 
-## Demo UI (Streamlit)
+<details>
+<summary><strong>DX: Built for Extensibility</strong></summary>
 
-Run the interactive demo:
+This repo optimizes for **integrators**: swap runtimes without rewriting the batch pipeline, keep a **fixed downstream contract**, and emit **auditable JSON** (not “score-only” blobs).
+
+### Config-only inference backend selection
+
+- Set `model_settings.inference.backend` in `configs/*.json` to one of: `simulated`, `ollama_vision`, `mock_api`, `llama_cpp`.
+- For ad-hoc runs, the CLI can override without editing files: `python3 src/ai_quality_agent.py --profile dev --inference-backend mock_api` (see `--help`).
+- Composition root: `build_inference_engine()` in [`src/models/inference_adapter.py`](src/models/inference_adapter.py) selects the concrete engine class from config.
+
+Same codebase path runs locally (simulated / Ollama / llama.cpp HTTP) or against a mock HTTP API—**no forked “deploy-only” branch** unless your infra truly requires it.
+
+### Orchestrator contract: one method shape, normalized outputs
+
+Engines are **not** tied to a shared ABC in this codebase. Each backend class implements the same surface:
+
+`predict_quality(photo_path: str, metrics: dict) -> dict`
+
+Return dicts are passed through `_normalize_result(...)` so downstream code sees a **stable schema**: at minimum `decision`, `code`, `msg`, plus optional `confidence`, and `backend` (including `provider->simulated` when fallback fires).
+
+**Adding a new backend** today means: implement that method + normalize through `_normalize_result`, then add a branch in `build_inference_engine`. If you want static enforcement later, a `typing.Protocol` (or an ABC) is an incremental hardening step—the factory stays the single registry for CI/review friendliness.
+
+### Actionable batch artifacts
+
+- Per-inference payloads retain **`code`** (machine-oriented) and **`msg`** (human-oriented) after normalization—failures are classified, not opaque.
+- Batch summaries include **`summary.decision_reason`**: a single string that records how **quality-gate** and **aggregated arbitration** were merged (`merge_gate_and_arbitration`), so **why** the merged outcome is `GO` / `REVIEW` / `NO_GO` is reproducible from the JSON without re-running the batch.
+
+See also: [`docs/Architecture.md`](docs/Architecture.md) for the provider contract and fallback behavior.
+
+</details>
+
+## Demo UI (Streamlit)
 
 ```bash
 streamlit run app.py
 ```
 
-What the demo shows:
-- Upload/sample image + live analysis
-- `Mock` vs `Real Pipeline` mode
-- Structured output and parsing showcase
+Compare **Manual Baseline (for contrast)** vs **AI Pipeline (real)**, side-by-side score delta, and an LLM parsing demo.
 
-Optional media:
-- Add `assets/demo.gif` and embed: `![Framework Demo](assets/demo.gif)`
+<details>
+<summary><strong>Demo preview & optional assets</strong></summary>
 
-## Core Guarantees (Source of Truth)
+![Framework Demo](assets/demo.gif)
+
+If the GIF is not available yet, add a screenshot as `assets/demo.png` and update the image path above.
+
+</details>
+
+<details>
+<summary><strong>Project identity</strong></summary>
+
+| Item | Value |
+|------|--------|
+| **Display name** | Agentic Testing Framework |
+| **Python package** (`pyproject.toml`) | `agentic_testing_framework` |
+| **Default model profile label** (`configs/*.json` → `model_settings.name`) | `Agentic Testing Framework - Llama 4-bit` |
+| **Docker image tag** (example) | `agentic-testing-framework:latest` |
+| **Memory profiling** (`src/util/monitor_performance.py`) | Prefer `ATF_MONITOR_MEMORY=1`; legacy alias `PIXELQA_MONITOR_MEMORY` still works |
+
+</details>
+
+<details>
+<summary><strong>Why this project</strong></summary>
+
+- Automates repetitive image QA with consistent decision policy.
+- Supports multiple inference backends (`simulated`, `ollama_vision`, `mock_api`, `llama_cpp`).
+- Keeps results traceable with ranking, reports, and guardrail-driven recovery.
+
+</details>
+
+<details>
+<summary><strong>Core guarantees (source of truth)</strong></summary>
 
 - **Architecture**: `Engine -> Model -> Eval` with clear boundaries.
 - **Decision policy**: conservative release gating (`GO` / `REVIEW` / `NO_GO`).
@@ -53,7 +97,10 @@ Optional media:
 - **Retention**: auto-clean for `batch_report_*.json` and `error_report_*.json` after 14 days.
 - **CI scope**: lint/test coverage follows `.github/workflows/ci.yml` selected `src` paths plus `tests`.
 
-## Pipeline Flow
+</details>
+
+<details>
+<summary><strong>Pipeline flow</strong></summary>
 
 ```mermaid
 flowchart LR
@@ -64,9 +111,11 @@ flowchart LR
     D -- NO_GO: Guardrail Loopback --> B
 ```
 
+</details>
+
 ## Usage
 
-Basic runs:
+**Basic runs:**
 
 ```bash
 python3 src/ai_quality_agent.py --profile dev
@@ -74,7 +123,8 @@ python3 src/ai_quality_agent.py --profile benchmark
 python3 src/ai_quality_agent.py --config configs/dev.json
 ```
 
-Advanced runs:
+<details>
+<summary><strong>Advanced CLI</strong></summary>
 
 ```bash
 python3 src/ai_quality_agent.py --compare-profiles dev benchmark
@@ -86,23 +136,32 @@ python3 src/ai_quality_agent.py --profile dev --overhead-analysis
 python3 src/test_failure_memory_retrieval.py
 ```
 
-## Docker (Optional)
+</details>
+
+<details>
+<summary><strong>Docker (optional)</strong></summary>
 
 ```bash
-docker build -t pixelqa-llama:latest .
+docker build -t agentic-testing-framework:latest .
 docker run --rm \
   -v "$(pwd)/test_images:/app/test_images" \
   -v "$(pwd)/results:/app/results" \
-  pixelqa-llama:latest
+  agentic-testing-framework:latest
 ```
 
-## Common Issues
+</details>
+
+<details>
+<summary><strong>Troubleshooting</strong></summary>
 
 - **Ollama not responding**: check `http://localhost:11434`
 - **No images found**: samples are auto-generated
 - **Slow performance**: try `--inference-backend simulated`
 
-## CI / Tests
+</details>
+
+<details>
+<summary><strong>CI / local tests</strong></summary>
 
 ```bash
 pip install -r requirements.txt
@@ -112,12 +171,17 @@ PYTHONPATH=src pytest
 
 Workflow reference: `.github/workflows/ci.yml`
 
-## Deeper Documentation
+</details>
+
+<details>
+<summary><strong>Deeper documentation & roadmap</strong></summary>
+
+**Docs**
 
 - Architecture and provider details: [`docs/Architecture.md`](docs/Architecture.md)
 - For benchmark, repeatability, and reliability narratives, use docs + report artifacts under `results/`.
 
-## Roadmap
+**Roadmap**
 
 - [x] Multi-backend inference abstraction
 - [x] Batch ranking + release arbitration
@@ -125,6 +189,8 @@ Workflow reference: `.github/workflows/ci.yml`
 - [x] Automated JSON error reporting with retention
 - [ ] Multi-threading optimization for larger datasets
 - [ ] Extended visual diagnostics (OpenCV-based)
+
+</details>
 
 ## Author
 
