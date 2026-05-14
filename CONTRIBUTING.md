@@ -13,7 +13,13 @@ Thanks for helping improve this project. Small, focused changes are easier to re
 cd agentic_testing_framework
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install --upgrade pip
+python -m pip install -U pip
+pip install -e ".[dev]"
+```
+
+Alternatively, install from the pinned list (same set Docker uses; keep versions aligned with `pyproject.toml`):
+
+```bash
 pip install -r requirements.txt
 pip install pytest pytest-cov ruff
 ```

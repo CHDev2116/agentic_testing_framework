@@ -11,9 +11,12 @@ Configuration-driven framework to evaluate image quality and make production rel
 ```bash
 git clone https://github.com/CHDev2116/agentic_testing_framework
 cd agentic_testing_framework
-pip install -r requirements.txt
+python -m pip install -U pip
+pip install -e ".[dev]"
 python3 src/ai_quality_agent.py --profile dev
 ```
+
+`requirements.txt` carries the same pins for Docker and pin-only installs; keep it aligned with `pyproject.toml` `[project.dependencies]`.
 
 If no input images are present, sample images are auto-generated.
 
@@ -166,11 +169,13 @@ docker run --rm \
 <summary><strong>CI / local tests</strong></summary>
 
 ```bash
-pip install -r requirements.txt
-pip install pytest pytest-cov ruff
+python -m pip install -U pip
+pip install -e ".[dev]"
 ruff check src tests
 PYTHONPATH=src pytest
 ```
+
+Docker and other pin-based installs use `requirements.txt` (keep versions aligned with `pyproject.toml` `[project.dependencies]`).
 
 Workflow reference: `.github/workflows/ci.yml`
 

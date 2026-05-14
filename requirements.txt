@@ -1,3 +1,4 @@
+# Pinned installs for CI and Docker. Keep in sync with pyproject.toml [project.dependencies].
 annotated-types==0.7.0
 anyio==4.13.0
 beautifulsoup4==4.14.3
@@ -28,7 +29,7 @@ multitasking==0.0.12
 mypy_extensions==1.1.0
 numpy==2.4.4
 ollama==0.6.1
-opencv-python-headless==4.12.0.88
+opencv-python-headless==4.13.0.92
 orjson==3.11.8
 packaging==26.0
 pandas==3.0.2
