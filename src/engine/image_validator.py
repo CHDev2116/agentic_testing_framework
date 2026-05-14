@@ -38,7 +38,3 @@ class ImageQualityValidator:
             result["verdict"] = "Fail: Overexposed"
             
         return result
-
-# Test usage:
-# validator = ImageQualityValidator()
-# print(validator.analyze_exposure("test_photo.jpg"))

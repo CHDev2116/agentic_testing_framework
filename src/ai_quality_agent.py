@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 import os
 import random
 import threading
@@ -26,6 +27,8 @@ from eval.benchmark_evaluator import (
     get_release_decision,
 )
 from models.inference_adapter import build_inference_engine
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG = {
     "model_settings": {"name": "Default-Model", "bit_depth": 4},
@@ -85,7 +88,7 @@ def cleanup_old_reports(output_folder_path, max_age_days=REPORT_RETENTION_DAYS):
                 os.remove(file_path)
                 deleted_count += 1
         except OSError as e:
-            print(f"WARNING: Could not remove old report {file_path}: {e}")
+            logger.warning("Could not remove old report %s: %s", file_path, e)
 
     return deleted_count
 
@@ -124,7 +127,7 @@ def ensure_sample_images(image_folder_path):
             draw.line((idx, 0, idx, 127), fill=255 - intensity)
         image.save(os.path.join(image_folder_path, file_name))
 
-    print("No input images found. Generated sample dataset in input folder.")
+    logger.info("No input images found. Generated sample dataset in input folder.")
 
 
 def ensure_stress_test_images(image_folder_path, target_count=100):
@@ -164,7 +167,7 @@ def ensure_stress_test_images(image_folder_path, target_count=100):
             out_name = f"stress_{source_name}_{idx + 1:03d}.jpg"
             enhancer.save(os.path.join(image_folder_path, out_name), quality=90)
 
-    print(f"Stress-test mode: ensured at least {target_count} images in input folder.")
+    logger.info("Stress-test mode: ensured at least %s images in input folder.", target_count)
 
 
 def load_config(profile="dev", config_path=None):
@@ -212,8 +215,12 @@ class QuantizedVisionAgent:
         self.model_info = config["model_settings"]
         self.inference_engine = build_inference_engine(config)
         self.oom_probability = float(config.get("runtime", {}).get("oom_probability", 0.0))
-        print(f"Startup mode: {self.model_info['name']} ({self.model_info['bit_depth']}-bit)")
-        print(f"Inference backend: {self.inference_engine.backend_name}")
+        logger.info(
+            "Startup mode: %s (%s-bit)",
+            self.model_info["name"],
+            self.model_info["bit_depth"],
+        )
+        logger.info("Inference backend: %s", self.inference_engine.backend_name)
 
     def get_all_photos(self):
         folder_name = self.config["folders"]["input"]
@@ -256,13 +263,17 @@ def save_batch_report(report_data, output_folder):
 
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(report_data, f, indent=4, ensure_ascii=False)
-    print(f"\nBatch test completed. Full report saved to: {file_path}")
+    logger.info("Batch test completed. Full report saved to: %s", file_path)
 
     deleted_count = cleanup_old_reports(full_output_path)
     if deleted_count > 0:
-        print(f"Cleaned up {deleted_count} report(s) older than {REPORT_RETENTION_DAYS} days.")
+        logger.info(
+            "Cleaned up %s report(s) older than %s days.",
+            deleted_count,
+            REPORT_RETENTION_DAYS,
+        )
     current_report_count = count_reports(full_output_path)
-    print(f"Current report count: {current_report_count}")
+    logger.info("Current report count: %s", current_report_count)
     return file_path
 
 
@@ -272,7 +283,7 @@ def save_comparison_report(comparison_data, output_folder):
     file_path = comparison_dir / f"profile_comparison_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(comparison_data, f, indent=4, ensure_ascii=False)
-    print(f"Comparison report saved to: {file_path}")
+    logger.info("Comparison report saved to: %s", file_path)
     return str(file_path)
 
 
@@ -282,7 +293,7 @@ def save_repeatability_report(repeatability_data, output_folder):
     file_path = repeatability_dir / f"repeatability_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(repeatability_data, f, indent=4, ensure_ascii=False)
-    print(f"Repeatability report saved to: {file_path}")
+    logger.info("Repeatability report saved to: %s", file_path)
     return str(file_path)
 
 
@@ -292,7 +303,7 @@ def save_performance_report(performance_data, output_folder):
     file_path = performance_dir / f"performance_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(performance_data, f, indent=4, ensure_ascii=False)
-    print(f"Performance report saved to: {file_path}")
+    logger.info("Performance report saved to: %s", file_path)
     return str(file_path)
 
 
@@ -302,7 +313,7 @@ def save_overhead_report(overhead_data, output_folder):
     file_path = overhead_dir / f"overhead_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(overhead_data, f, indent=4, ensure_ascii=False)
-    print(f"Overhead report saved to: {file_path}")
+    logger.info("Overhead report saved to: %s", file_path)
     return str(file_path)
 
 
@@ -312,12 +323,13 @@ def save_error_report(error_data, output_folder):
     file_path = error_dir / f"error_report_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(error_data, f, indent=4, ensure_ascii=False)
-    print(f"Error report saved to: {file_path}")
+    logger.info("Error report saved to: %s", file_path)
     deleted_count = cleanup_old_error_reports(str(error_dir))
     if deleted_count > 0:
-        print(
-            f"Cleaned up {deleted_count} error report(s) older than "
-            f"{REPORT_RETENTION_DAYS} days."
+        logger.info(
+            "Cleaned up %s error report(s) older than %s days.",
+            deleted_count,
+            REPORT_RETENTION_DAYS,
         )
     return str(file_path)
 
@@ -339,7 +351,7 @@ def cleanup_old_error_reports(error_folder_path, max_age_days=REPORT_RETENTION_D
                 os.remove(file_path)
                 deleted_count += 1
         except OSError as e:
-            print(f"WARNING: Could not remove old error report {file_path}: {e}")
+            logger.warning("Could not remove old error report %s: %s", file_path, e)
 
     return deleted_count
 
@@ -576,7 +588,7 @@ def run_batch_test(
         config.setdefault("model_settings", {}).setdefault("inference", {})
         config["model_settings"]["inference"]["backend"] = inference_backend_override
         config_source = f"{config_source} + CLI(backend={inference_backend_override})"
-    print(f"Loaded config source: {config_source}")
+    logger.info("Loaded config source: %s", config_source)
     agent = QuantizedVisionAgent(config)
     photos = agent.get_all_photos()
     if stress_test_count:
@@ -591,7 +603,7 @@ def run_batch_test(
         agent.oom_probability = 0.0
 
     if not photos:
-        print("No testable images were found.")
+        logger.warning("No testable images were found.")
         return None
 
     batch_report = {
@@ -627,7 +639,7 @@ def run_batch_test(
         "failure_memory_write_count": 0,
     }
 
-    print(f"Starting to process {len(photos)} image(s)...\n")
+    logger.info("Starting to process %s image(s)...", len(photos))
 
     for path in photos:
         file_name = os.path.basename(path)
@@ -736,9 +748,12 @@ def run_batch_test(
                         file_stem=file_stem,
                         attempt_idx=attempt_idx + 1,
                     )
-                    print(
-                        f"Loopback retry {attempt_idx + 1}/{max_retry} for {file_name}: "
-                        f"detected under-exposed; brightness x{brighten_factor} and re-evaluate."
+                    logger.info(
+                        "Loopback retry %s/%s for %s: detected under-exposed; brightness x%s and re-evaluate.",
+                        attempt_idx + 1,
+                        max_retry,
+                        file_name,
+                        brighten_factor,
                     )
                 elif next_action == "dim":
                     current_path = image_processor.adjust_brightness(
@@ -747,9 +762,12 @@ def run_batch_test(
                         file_stem=file_stem,
                         attempt_idx=attempt_idx + 1,
                     )
-                    print(
-                        f"Loopback retry {attempt_idx + 1}/{max_retry} for {file_name}: "
-                        f"detected over-exposed; brightness x{dim_factor} and re-evaluate."
+                    logger.info(
+                        "Loopback retry %s/%s for %s: detected over-exposed; brightness x%s and re-evaluate.",
+                        attempt_idx + 1,
+                        max_retry,
+                        file_name,
+                        dim_factor,
                     )
                 elif next_action == "sharpen":
                     current_path = image_processor.apply_sharpen(
@@ -757,18 +775,23 @@ def run_batch_test(
                         file_stem=file_stem,
                         attempt_idx=attempt_idx + 1,
                     )
-                    print(
-                        f"Loopback retry {attempt_idx + 1}/{max_retry} for {file_name}: "
-                        "detected blurry signal; apply sharpen and re-evaluate."
+                    logger.info(
+                        "Loopback retry %s/%s for %s: detected blurry signal; apply sharpen and re-evaluate.",
+                        attempt_idx + 1,
+                        max_retry,
+                        file_name,
                     )
                 loopback_stop_reason = f"retry_scheduled ({next_action})"
 
             cpu_delta = max(0.0, time.process_time() - cpu_start)
             wall_delta = max(final_latency / 1000.0, 1e-6)
             process_cpu_usage_pct = round((cpu_delta / wall_delta) * 100, 4)
-            print(
-                f"Processed {file_name}: [{final_ai_result['code']}] {final_ai_result['decision']} "
-                f"({round(final_latency, 2)}ms total)"
+            logger.info(
+                "Processed %s: [%s] %s (%sms total)",
+                file_name,
+                final_ai_result["code"],
+                final_ai_result["decision"],
+                round(final_latency, 2),
             )
 
             batch_report["results"].append({
@@ -809,7 +832,7 @@ def run_batch_test(
             overhead_counters["total_loopback_retry_count"] += max(0, len(attempt_history) - 1)
 
         except Exception as e:
-            print(f"Failed to process file {file_name}: {e}")
+            logger.exception("Failed to process file %s", file_name)
             error_payload = {
                 "generated_at": datetime.now().isoformat(),
                 "scope": "single_file",
@@ -904,18 +927,28 @@ def run_batch_test(
 
     top_ranking = rankings[:3]
 
-    print("\n" + "=" * 55)
-    print("Test Dashboard")
-    print(f"  - Total tests: {total}")
-    print(f"  - Pass rate (Optimal): {pass_rate:.1f}%")
-    print(f"  - Average latency: {avg_lat:.2f} ms")
-    print(f"  - Release decision (arbitrated): {decision}")
-    print(f"    (gate={gate_decision}, arbitration_batch={arbitration_batch})")
-    print("-" * 55)
-    print("Top ranking:")
+    logger.info("%s", "\n" + "=" * 55)
+    logger.info("Test Dashboard")
+    logger.info("  - Total tests: %s", total)
+    logger.info("  - Pass rate (Optimal): %.1f%%", pass_rate)
+    logger.info("  - Average latency: %.2f ms", avg_lat)
+    logger.info("  - Release decision (arbitrated): %s", decision)
+    logger.info(
+        "    (gate=%s, arbitration_batch=%s)",
+        gate_decision,
+        arbitration_batch,
+    )
+    logger.info("%s", "-" * 55)
+    logger.info("Top ranking:")
     for item in top_ranking:
-        print(f"  #{item['rank']} {item['file']} | score={item['score']} | {item['decision']}")
-    print("=" * 55)
+        logger.info(
+            "  #%s %s | score=%s | %s",
+            item["rank"],
+            item["file"],
+            item["score"],
+            item["decision"],
+        )
+    logger.info("%s", "=" * 55)
 
     batch_report["summary"] = {
         "total_tests": total,
@@ -996,7 +1029,7 @@ def run_batch_test(
 def run_profile_comparison(profiles, inference_backend_override=None):
     profile_outputs = []
     for profile in profiles:
-        print(f"\nRunning profile: {profile}")
+        logger.info("Running profile: %s", profile)
         result = run_batch_test(
             config_profile=profile,
             inference_backend_override=inference_backend_override,
@@ -1010,20 +1043,24 @@ def run_profile_comparison(profiles, inference_backend_override=None):
         key=lambda item: (-item["summary"]["pass_rate"], item["summary"]["avg_latency_ms"])
     )
 
-    print("\nProfile ranking (best to worst):")
+    logger.info("%s", "\nProfile ranking (best to worst):")
     for idx, item in enumerate(ordered, start=1):
         summary = item["summary"]
-        print(
-            f"  #{idx} {item['profile']} | pass={summary['pass_rate']}% | "
-            f"latency={summary['avg_latency_ms']}ms | decision={summary['release_decision']}"
+        logger.info(
+            "  #%s %s | pass=%s%% | latency=%sms | decision=%s",
+            idx,
+            item["profile"],
+            summary["pass_rate"],
+            summary["avg_latency_ms"],
+            summary["release_decision"],
         )
 
     benchmark_insights = generate_benchmark_insights(profile_outputs, ordered)
-    print("\nBenchmark Insights:")
+    logger.info("%s", "\nBenchmark Insights:")
     for idx, insight in enumerate(benchmark_insights, start=1):
-        print(f"  [{idx}] Trade-off: {insight['trade_off']}")
-        print(f"      Observation: {insight['observation']}")
-        print(f"      Decision implication: {insight['decision_implication']}")
+        logger.info("  [%s] Trade-off: %s", idx, insight["trade_off"])
+        logger.info("      Observation: %s", insight["observation"])
+        logger.info("      Decision implication: %s", insight["decision_implication"])
 
     comparison_report = {
         "generated_at": datetime.now().isoformat(),
@@ -1036,10 +1073,14 @@ def run_profile_comparison(profiles, inference_backend_override=None):
 
 
 def run_repeatability_test(profile, runs=5, inference_backend_override=None):
-    print(f"\nRunning repeatability test: profile={profile}, runs={runs}")
+    logger.info(
+        "Running repeatability test: profile=%s, runs=%s",
+        profile,
+        runs,
+    )
     run_outputs = []
     for run_idx in range(1, runs + 1):
-        print(f"\nRepeatability run {run_idx}/{runs}")
+        logger.info("Repeatability run %s/%s", run_idx, runs)
         run_result = run_batch_test(
             config_profile=profile,
             deterministic=True,
@@ -1051,7 +1092,7 @@ def run_repeatability_test(profile, runs=5, inference_backend_override=None):
             run_outputs.append(run_result)
 
     if not run_outputs:
-        print("Repeatability test failed: no run output produced.")
+        logger.error("Repeatability test failed: no run output produced.")
         return None
 
     pass_rates = [r["summary"]["pass_rate"] for r in run_outputs]
@@ -1092,16 +1133,21 @@ def run_repeatability_test(profile, runs=5, inference_backend_override=None):
     }
     save_repeatability_report(repeatability_report, "results")
 
-    print("\nRepeatability summary:")
-    print(f"  - Same image set across runs: {image_set_consistent}")
-    print(f"  - Pass-rate variance: {variance_report['pass_rate_variance']}")
-    print(f"  - Avg-latency variance: {variance_report['avg_latency_variance']}")
-    print(f"  - Max per-image score variance: {variance_report['max_image_score_variance']}")
-    print(f"  - Decision distribution: {decision_distribution}")
+    logger.info("%s", "\nRepeatability summary:")
+    logger.info("  - Same image set across runs: %s", image_set_consistent)
+    logger.info("  - Pass-rate variance: %s", variance_report["pass_rate_variance"])
+    logger.info("  - Avg-latency variance: %s", variance_report["avg_latency_variance"])
+    logger.info(
+        "  - Max per-image score variance: %s",
+        variance_report["max_image_score_variance"],
+    )
+    logger.info("  - Decision distribution: %s", decision_distribution)
     return repeatability_report
 
 
 if __name__ == "__main__":
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description="Quantized Vision QA batch tester")
     parser.add_argument(
         "--profile",

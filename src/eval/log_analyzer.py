@@ -1,3 +1,8 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 class LogAnalyzer:
     def __init__(self, error_tolerance: int):
         """
@@ -16,30 +21,28 @@ class LogAnalyzer:
 
         for right in range(len(logs)):
             # If the current status is Error, increase the counter.
-            if logs[right] == 'E':
+            if logs[right] == "E":
                 error_count += 1
-            
+
             # Shrink the left boundary when error count exceeds tolerance.
             while error_count > self.k:
-                if logs[left] == 'E':
+                if logs[left] == "E":
                     error_count -= 1
                 left += 1
-            
+
             # Update the maximum valid window size.
             max_length = max(max_length, right - left + 1)
-            
+
         return max_length
 
+
 if __name__ == "__main__":
-    # Simulated result string after ai_quality_agent execution.
-    # S = Success, E = Error
-    test_logs = "SSSESSS" 
-    
-    # Tolerate one error.
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+    test_logs = "SSSESSS"
+
     analyzer = LogAnalyzer(error_tolerance=1)
     stable_length = analyzer.find_max_stable_sequence(test_logs)
-    
-    print(f"Test log: {test_logs}")
-    print(f"Longest stable segment with tolerance {analyzer.k}: {stable_length}")
-    
-    # Expected result: In SSSESSS, the full sequence includes one E, so length should be 7.
+
+    logger.info("Test log: %s", test_logs)
+    logger.info("Longest stable segment with tolerance %s: %s", analyzer.k, stable_length)

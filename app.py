@@ -12,6 +12,8 @@ import streamlit as st
 from PIL import Image, UnidentifiedImageError
 
 logger = logging.getLogger(__name__)
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 QualityOrchestrator: Optional[type] = None
 try:

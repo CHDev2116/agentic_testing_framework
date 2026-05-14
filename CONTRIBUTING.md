@@ -51,7 +51,7 @@ Coverage options are defined in `pyproject.toml` (`--cov=src`, XML report for to
 CI runs Ruff on the full Python tree under `src` plus `tests`. Match it before opening a PR:
 
 ```bash
-ruff check src tests app.py
+ruff check src tests app.py test_connection.py
 ```
 
 ## Optional: agent smoke run (CI parity)
@@ -73,3 +73,5 @@ PYTHONPATH=src python src/ai_quality_agent.py --profile dev --performance-analys
 ## Code style
 
 Follow existing patterns in nearby modules (logging, typing, error messages). Prefer clear names and small functions over clever one-liners.
+
+Use **`logging.getLogger(__name__)`** instead of `print` for diagnostics. The batch CLI configures `logging.basicConfig(level=INFO, format="%(message)s")` in `__main__` so terminal output stays readable; `app.py` does the same when no root handler is present (e.g. under Streamlit).

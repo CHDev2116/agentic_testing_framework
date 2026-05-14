@@ -1,6 +1,9 @@
+import logging
 import os
 from importlib import import_module
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
@@ -34,7 +37,10 @@ class FailureMemoryStore:
             )
             self.encoder = sentence_transformer_cls(embedding_model)
         except Exception as e:
-            print(f"WARNING: Could not load sentence-transformers model ({e}). Using local fallback embeddings.")
+            logger.warning(
+                "Could not load sentence-transformers model (%s). Using local fallback embeddings.",
+                e,
+            )
 
     def build_document(self, file_name, decision_payload):
         reason = decision_payload.get("msg") or decision_payload.get("decision") or "Unknown issue"

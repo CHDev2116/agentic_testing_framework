@@ -1,13 +1,17 @@
+import logging
 import os
 import statistics
 from PIL import Image
+
+logger = logging.getLogger(__name__)
+
 
 def calculate_metrics(photo_path):
     """
     Load a real image and calculate brightness and sharpness metrics.
     """
     if not os.path.exists(photo_path):
-        print(f"⚠️ Path not found: {photo_path}")
+        logger.warning("Path not found: %s", photo_path)
         return None
 
     try:
@@ -26,8 +30,8 @@ def calculate_metrics(photo_path):
         return {
             "sharpness": round(statistics.stdev(pixels), 2),
             "avg_brightness": round(statistics.mean(pixels), 2),
-            "max_brightness": int(max(pixels))
+            "max_brightness": int(max(pixels)),
         }
     except Exception as e:
-        print(f"❌ Image engine computation failed: {e}")
+        logger.error("Image engine computation failed: %s", e)
         return None

@@ -1,3 +1,4 @@
+import logging
 import os
 import tempfile
 from datetime import datetime
@@ -8,11 +9,13 @@ from PIL import Image
 
 from engine.vision_math import calculate_metrics
 
+logger = logging.getLogger(__name__)
+
 
 class QuantizedVisionAgent:
     def __init__(self, model_name="Agentic Testing Framework - Llama 4-bit"):
         self.model_name = model_name
-        print(f"📦 Loaded quantized model: {self.model_name}")
+        logger.info("Loaded quantized model: %s", self.model_name)
 
     def verify_capture_success(self, photo_path: str) -> bool:
         """Return True if the capture file exists (deterministic for this demo script)."""
@@ -41,17 +44,17 @@ def run_test_pipeline(work_dir: Optional[Path] = None) -> None:
     report = {"timestamp": datetime.now().isoformat(), "test_cases": []}
 
     try:
-        print(f"🔍 Checking whether file exists: {mock_photo}")
+        logger.info("Checking whether file exists: %s", mock_photo)
         if agent.verify_capture_success(str(mock_photo)):
             metrics = calculate_metrics(str(mock_photo))
             if metrics is None:
-                print("❌ Metrics unavailable (image load failed).")
+                logger.error("Metrics unavailable (image load failed).")
                 return
 
             ai_decision = agent.call_4bit_model_inference(metrics)
 
-            print(f"📊 Numeric metrics: {metrics}")
-            print(f"🤖 AI decision: {ai_decision}")
+            logger.info("Numeric metrics: %s", metrics)
+            logger.info("AI decision: %s", ai_decision)
 
             report["test_cases"].append(
                 {
@@ -61,13 +64,15 @@ def run_test_pipeline(work_dir: Optional[Path] = None) -> None:
                 }
             )
         else:
-            print("❌ Error: File does not exist. Skipping AI analysis.")
+            logger.warning("File does not exist. Skipping AI analysis.")
 
-    except OSError as e:
-        print(f"💥 System crash: {e}")
+    except OSError:
+        logger.exception("System error during verify pipeline")
     finally:
-        print("💾 Test report has been updated.")
+        logger.info("Test report has been updated.")
 
 
 if __name__ == "__main__":
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
     run_test_pipeline()

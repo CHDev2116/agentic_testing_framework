@@ -173,7 +173,7 @@ docker run --rm \
 ```bash
 python -m pip install -U pip
 pip install -e ".[dev]"
-ruff check src tests app.py
+ruff check src tests app.py test_connection.py
 PYTHONPATH=src pytest
 ```
 

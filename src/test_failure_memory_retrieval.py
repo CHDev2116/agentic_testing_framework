@@ -1,4 +1,8 @@
+import logging
+
 from util.failure_memory import FailureMemoryStore
+
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -30,19 +34,24 @@ def main():
     metadatas = result.get("metadatas", [[]])[0]
     distances = result.get("distances", [[]])[0]
 
-    print(f"Query: {query}")
+    logger.info("Query: %s", query)
     if not documents:
-        print("No similar failure cases found.")
+        logger.info("No similar failure cases found.")
         return
 
-    print("Top similar failure cases:")
+    logger.info("Top similar failure cases:")
     for idx, (doc, meta, dist) in enumerate(zip(documents, metadatas, distances), start=1):
-        print(
-            f"{idx}. file={meta.get('file')} | release={meta.get('release_decision')} | "
-            f"distance={dist:.4f}"
+        logger.info(
+            "%s. file=%s | release=%s | distance=%.4f",
+            idx,
+            meta.get("file"),
+            meta.get("release_decision"),
+            dist,
         )
-        print(f"   document={doc}")
+        logger.info("   document=%s", doc)
 
 
 if __name__ == "__main__":
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
     main()
