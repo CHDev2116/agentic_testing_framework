@@ -27,7 +27,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check src tests
+        run: ruff check src tests app.py
 
       - name: Unit tests with coverage
         run: |

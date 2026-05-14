@@ -7,6 +7,15 @@ Thanks for helping improve this project. Small, focused changes are easier to re
 - Python **3.9+** (CI runs on **3.11**; matching CI locally avoids surprises).
 - A clone of the repository.
 
+## Dependencies (single source of truth)
+
+**All pinned runtime dependencies are defined in `pyproject.toml` under `[project.dependencies]`.** Do not maintain a second copy of version pins elsewhere.
+
+- **Developers / CI**: `pip install -e ".[dev]"` (includes pytest, coverage, Ruff).
+- **Optional**: `pip install -r requirements.txt` — this file only contains `-e .[dev]` as a convenience shim for older habits or docs that still use `-r`.
+
+When you add or bump a dependency, edit **`pyproject.toml` only**, then reinstall your venv.
+
 ## Local setup
 
 ```bash
@@ -17,14 +26,17 @@ python -m pip install -U pip
 pip install -e ".[dev]"
 ```
 
-Alternatively, install from the pinned list (same set Docker uses; keep versions aligned with `pyproject.toml`):
+The CLI and tests expect `src` on the module path. Use `PYTHONPATH=src` as shown below (same as CI).
+
+## Streamlit demo (`app.py`)
+
+Run from the **repository root** so `agent`, `engine`, etc. resolve:
 
 ```bash
-pip install -r requirements.txt
-pip install pytest pytest-cov ruff
+PYTHONPATH=src streamlit run app.py
 ```
 
-The CLI and tests expect `src` on the module path. Use `PYTHONPATH=src` as shown below (same as CI).
+Without `PYTHONPATH=src`, **Manual Baseline** still works; **AI Pipeline** needs the orchestrator import path above.
 
 ## Run tests
 
@@ -39,7 +51,7 @@ Coverage options are defined in `pyproject.toml` (`--cov=src`, XML report for to
 CI runs Ruff on the full Python tree under `src` plus `tests`. Match it before opening a PR:
 
 ```bash
-ruff check src tests
+ruff check src tests app.py
 ```
 
 ## Optional: agent smoke run (CI parity)

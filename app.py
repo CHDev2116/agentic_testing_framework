@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import random
 import time
@@ -10,13 +11,30 @@ import numpy as np
 import streamlit as st
 from PIL import Image, UnidentifiedImageError
 
+logger = logging.getLogger(__name__)
+
+QualityOrchestrator: Optional[type] = None
 try:
-    from src.agent.orchestrator import QualityOrchestrator
-except Exception:
-    QualityOrchestrator = None
+    from agent.orchestrator import QualityOrchestrator as _QualityOrchestrator
+
+    QualityOrchestrator = _QualityOrchestrator
+except ImportError:
+    try:
+        from src.agent.orchestrator import QualityOrchestrator as _QualityOrchestratorSrc
+
+        QualityOrchestrator = _QualityOrchestratorSrc
+        logger.info(
+            "Loaded QualityOrchestrator via src.agent (PYTHONPATH should include the repository root)."
+        )
+    except ImportError as exc:
+        logger.warning(
+            "QualityOrchestrator not importable (%s). From repo root run: "
+            "PYTHONPATH=src streamlit run app.py",
+            exc,
+        )
 
 
-def _get_orchestrator() -> Optional["QualityOrchestrator"]:
+def _get_orchestrator() -> Optional[object]:
     if QualityOrchestrator is None:
         return None
     if "orchestrator" not in st.session_state:
@@ -109,7 +127,7 @@ def run_analysis(image: Image.Image, mode: str) -> Dict[str, object]:
             "confidence": 0.7,
             "label": "Fallback",
             "explanation": "Real pipeline unavailable, fallback to stub output.",
-            "raw": {"reason": "src.agent.orchestrator import failed"},
+            "raw": {"reason": "agent.orchestrator import failed; use PYTHONPATH=src from repo root"},
         }
 
     try:
@@ -117,6 +135,7 @@ def run_analysis(image: Image.Image, mode: str) -> Dict[str, object]:
         report = orchestrator.run_pipeline(metrics)
         return _normalize_real_result(report)
     except Exception as exc:
+        logger.exception("AI pipeline run failed")
         return {
             "score": 60,
             "confidence": 0.6,
@@ -181,7 +200,10 @@ with st.sidebar:
     show_latency = st.checkbox("Show latency", value=True)
     use_sample = st.button("Try sample image")
     if mode == "AI Pipeline (real)" and QualityOrchestrator is None:
-        st.warning("`src.agent.orchestrator` import failed; using fallback behavior.")
+        st.warning(
+            "`agent.orchestrator` could not be imported. From the **repository root** run: "
+            "`PYTHONPATH=src streamlit run app.py`"
+        )
 
 uploaded_file = st.file_uploader("Upload image", type=["png", "jpg", "jpeg"])
 
@@ -199,8 +221,10 @@ elif uploaded_file is not None:
         st.session_state["result"] = None
         st.session_state["compare_result"] = None
     except UnidentifiedImageError:
+        logger.warning("Upload rejected: not a decodable image")
         st.error("Cannot decode this file as an image. Please upload PNG/JPG.")
     except Exception as exc:
+        logger.exception("Failed to read uploaded image")
         st.error(f"Failed to read upload: {exc}")
 
 image = st.session_state["selected_image"]

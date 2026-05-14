@@ -2,7 +2,6 @@
 # not Apple Metal (Metal is macOS-only; use a host install if you need GPU on Apple Silicon).
 FROM python:3.11-slim
 
-# System deps for optional llama-cpp-python source builds and OpenCV headers used by some stacks.
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
@@ -13,15 +12,10 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Pinned runtime set (kept in sync with pyproject.toml [project.dependencies]).
-COPY requirements.txt .
-
-# CPU wheel / build for Linux (no CMAKE_ARGS for Metal).
-RUN pip install --no-cache-dir llama-cpp-python
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Application source
+# Dependency pins: pyproject.toml only. Runtime install (no [dev] extras).
 COPY . .
+RUN pip install --no-cache-dir llama-cpp-python \
+    && pip install --no-cache-dir .
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app/src

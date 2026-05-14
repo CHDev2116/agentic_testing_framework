@@ -16,7 +16,7 @@ pip install -e ".[dev]"
 python3 src/ai_quality_agent.py --profile dev
 ```
 
-`requirements.txt` carries the same pins for Docker and pin-only installs; keep it aligned with `pyproject.toml` `[project.dependencies]`.
+`requirements.txt` is a thin shim (`-e .[dev]`) for `pip install -r requirements.txt`; **all version pins live in `pyproject.toml`** (`[project.dependencies]`).
 
 If no input images are present, sample images are auto-generated.
 
@@ -54,11 +54,13 @@ See also: [`docs/Architecture.md`](docs/Architecture.md) for the provider contra
 
 ## Demo UI (Streamlit)
 
+From the **repository root** (so `src` is importable as top-level packages):
+
 ```bash
-streamlit run app.py
+PYTHONPATH=src streamlit run app.py
 ```
 
-Compare **Manual Baseline (for contrast)** vs **AI Pipeline (real)**, side-by-side score delta, and an LLM parsing demo.
+The **AI Pipeline** mode imports `agent.orchestrator`; if imports fail, the UI shows a `PYTHONPATH=src` hint. **Manual Baseline** mode works without the orchestrator.
 
 <details>
 <summary><strong>Demo preview & optional assets</strong></summary>
@@ -171,11 +173,11 @@ docker run --rm \
 ```bash
 python -m pip install -U pip
 pip install -e ".[dev]"
-ruff check src tests
+ruff check src tests app.py
 PYTHONPATH=src pytest
 ```
 
-Docker and other pin-based installs use `requirements.txt` (keep versions aligned with `pyproject.toml` `[project.dependencies]`).
+Docker and other installs use **`pyproject.toml` only** for dependency pins (`pip install .` in the Dockerfile). The `requirements.txt` shim is optional for local workflows.
 
 Workflow reference: `.github/workflows/ci.yml`
 
