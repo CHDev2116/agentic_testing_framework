@@ -1,5 +1,7 @@
 import logging
 
+from util.cli_logging import configure_cli_logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,8 +39,7 @@ class LogAnalyzer:
 
 
 if __name__ == "__main__":
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
+    configure_cli_logging()
     test_logs = "SSSESSS"
 
     analyzer = LogAnalyzer(error_tolerance=1)

@@ -1,5 +1,6 @@
 import logging
 
+from util.cli_logging import configure_cli_logging
 from util.failure_memory import FailureMemoryStore
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,5 @@ def main():
 
 
 if __name__ == "__main__":
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
+    configure_cli_logging()
     main()

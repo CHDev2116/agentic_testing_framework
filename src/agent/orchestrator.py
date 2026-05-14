@@ -4,6 +4,7 @@ import time
 
 from models.gemma_filter import GemmaFilter
 from models.llama_analyst import LlamaAnalyst
+from util.cli_logging import configure_cli_logging
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +82,7 @@ class QualityOrchestrator:
 
 
 if __name__ == "__main__":
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
+    configure_cli_logging()
     test_metrics = {
         "id": "Test_Photo_PASS_CASE",
         "brightness": 120,

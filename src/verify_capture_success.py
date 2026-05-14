@@ -8,6 +8,7 @@ from typing import Optional
 from PIL import Image
 
 from engine.vision_math import calculate_metrics
+from util.cli_logging import configure_cli_logging
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,5 @@ def run_test_pipeline(work_dir: Optional[Path] = None) -> None:
 
 
 if __name__ == "__main__":
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
+    configure_cli_logging()
     run_test_pipeline()

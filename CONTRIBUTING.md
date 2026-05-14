@@ -74,4 +74,4 @@ PYTHONPATH=src python src/ai_quality_agent.py --profile dev --performance-analys
 
 Follow existing patterns in nearby modules (logging, typing, error messages). Prefer clear names and small functions over clever one-liners.
 
-Use **`logging.getLogger(__name__)`** instead of `print` for diagnostics. The batch CLI configures `logging.basicConfig(level=INFO, format="%(message)s")` in `__main__` so terminal output stays readable; `app.py` does the same when no root handler is present (e.g. under Streamlit).
+Use **`logging.getLogger(__name__)`** instead of `print` for diagnostics. The batch CLI calls **`util.cli_logging.configure_cli_logging()`** in `__main__`, which sets `basicConfig` to include **timestamp**, **level**, and **logger name** when the root logger has no handlers yet. `app.py` does the same at import time when appropriate (e.g. under Streamlit).

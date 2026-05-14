@@ -13,6 +13,7 @@ from statistics import pvariance
 from PIL import Image, ImageDraw, ImageEnhance
 import psutil
 
+from util.cli_logging import configure_cli_logging
 from util.failure_memory import FailureMemoryStore
 from engine.image_processor import ImageProcessor
 from engine.vision_math import calculate_metrics
@@ -1146,8 +1147,7 @@ def run_repeatability_test(profile, runs=5, inference_backend_override=None):
 
 
 if __name__ == "__main__":
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
+    configure_cli_logging()
     parser = argparse.ArgumentParser(description="Quantized Vision QA batch tester")
     parser.add_argument(
         "--profile",

@@ -2,6 +2,8 @@ import logging
 import random
 import time
 
+from util.cli_logging import configure_cli_logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,9 +66,7 @@ class MockDevice:
 
 
 if __name__ == "__main__":
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
-
+    configure_cli_logging()
     my_ai_model = MiniVisionModel()
 
     success_phone = MockDevice(mode="normal")

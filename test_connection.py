@@ -33,6 +33,13 @@ def test_llama_health_check(url="http://localhost:8080/v1", model="llama-3.1-8b"
 
 
 if __name__ == "__main__":
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
+    import sys
+    from pathlib import Path
+
+    _src = Path(__file__).resolve().parent / "src"
+    if str(_src) not in sys.path:
+        sys.path.insert(0, str(_src))
+    from util.cli_logging import configure_cli_logging  # noqa: E402
+
+    configure_cli_logging()
     test_llama_health_check()
