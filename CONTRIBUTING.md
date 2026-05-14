@@ -30,22 +30,11 @@ Coverage options are defined in `pyproject.toml` (`--cov=src`, XML report for to
 
 ## Lint
 
-CI runs Ruff on a fixed set of paths. Match it before opening a PR:
+CI runs Ruff on the full Python tree under `src` plus `tests`. Match it before opening a PR:
 
 ```bash
-ruff check \
-  src/ai_quality_agent.py \
-  src/eval \
-  src/models/inference_adapter.py \
-  src/util/failure_memory.py \
-  src/util/monitor_performance.py \
-  src/agent/orchestrator.py \
-  src/engine/image_processor.py \
-  src/test_failure_memory_retrieval.py \
-  tests
+ruff check src tests
 ```
-
-If you touch files outside that list and Ruff reports issues there, fixing them in the same PR is welcome even though CI may not gate those paths yet.
 
 ## Optional: agent smoke run (CI parity)
 

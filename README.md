@@ -166,6 +166,7 @@ docker run --rm \
 ```bash
 pip install -r requirements.txt
 pip install pytest pytest-cov ruff
+ruff check src tests
 PYTHONPATH=src pytest
 ```
 

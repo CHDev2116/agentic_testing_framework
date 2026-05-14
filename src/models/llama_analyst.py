@@ -47,15 +47,15 @@ JSON Result:
             tps = estimated_tokens / duration if duration > 0 else 0
             
             # 專業 Performance Report 輸出
-            print(f"\n--- [Llama Performance Report] ---")
+            print("\n--- [Llama Performance Report] ---")
             print(f"Total Latency  : {duration:.2f}s")
             print(f"Est. Tokens    : {estimated_tokens}")
             print(f"Throughput     : {tps:.2f} TPS")
-            print(f"----------------------------------\n")
+            print("----------------------------------\n")
             
             return full_json
             
         except Exception as e:
-            print(f"--- [Llama Inference Failed] ---")
+            print("--- [Llama Inference Failed] ---")
             print(f"Error: {str(e)}")
             return json.dumps({"verdict": "Error", "analysis": "Pipeline failed."})

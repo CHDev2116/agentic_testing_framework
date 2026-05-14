@@ -14,7 +14,7 @@ class QualityOrchestrator:
         print(f"\n--- [Pipeline Start] Analyzing {image_id} ---")
 
         # --- Stage 1: 快速過濾 ---
-        print(f"Step 1: Running Gemma-2b for basic check...")
+        print("Step 1: Running Gemma-2b for basic check...")
         gemma_raw_response = self.gemma_filter.check_basic_quality(image_metrics)
         
         gemma_res = self._parse_json(gemma_raw_response)
@@ -34,12 +34,12 @@ class QualityOrchestrator:
         time.sleep(0.5)
 
         # --- Stage 2: 深度分析 ---
-        print(f"Step 2: Dispatching to Llama-3.1 for deep analysis...")
+        print("Step 2: Dispatching to Llama-3.1 for deep analysis...")
         llama_raw_response = self.llama_analyst.analyze_quality(image_metrics)
         
         llama_res = self._parse_json(llama_raw_response)
         if not llama_res or llama_res.get("verdict") == "Error":
-            print(f"⚠️ Llama Analysis stopped by Safety Guard.")
+            print("⚠️ Llama Analysis stopped by Safety Guard.")
             return {"id": image_id, "error": "Llama analysis timeout or error"}
 
         # --- Stage 3: 彙整最終報告 ---
@@ -58,7 +58,8 @@ class QualityOrchestrator:
         """
         終極 JSON 解析器：處理大小寫、多餘文字及編碼問題
         """
-        if not text: return None
+        if not text:
+            return None
         try:
             # 修正 Python vs JSON 布林值與空值
             processed_text = text.replace(": True", ": true").replace(": False", ": false").replace(": None", ": null")
@@ -70,7 +71,7 @@ class QualityOrchestrator:
                 json_str = processed_text[start_idx:end_idx + 1]
                 return json.loads(json_str)
             return None
-        except Exception as e:
+        except Exception:
             print(f"Parsing error logic triggered. Raw snippet: {text[:50]}...")
             return None
 

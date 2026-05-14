@@ -28,17 +28,7 @@ jobs:
           pip install pytest pytest-cov ruff
 
       - name: Lint
-        run: |
-          ruff check \
-            src/ai_quality_agent.py \
-            src/eval \
-            src/models/inference_adapter.py \
-            src/util/failure_memory.py \
-            src/util/monitor_performance.py \
-            src/agent/orchestrator.py \
-            src/engine/image_processor.py \
-            src/test_failure_memory_retrieval.py \
-            tests
+        run: ruff check src tests
 
       - name: Unit tests with coverage
         run: |
