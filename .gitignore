@@ -14,6 +14,7 @@ results/**/*.json
 # Local run artifacts (loopback cache, vector DB, coverage)
 results/loopback_cache/
 results/failure_memory_db/
+logs/**/*.json
 .coverage
 coverage.xml
 htmlcov/
