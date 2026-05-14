@@ -102,7 +102,7 @@ Optional: add a short screen recording as `assets/demo.gif` and reference it her
 - **Decision policy**: conservative release gating (`GO` / `REVIEW` / `NO_GO`).
 - **Loopback**: `NO_GO` recovery includes brighten/dim/sharpen strategies under retry limits.
 - **Retention**: auto-clean for `batch_report_*.json` and `error_report_*.json` after 14 days.
-- **CI scope**: Ruff on `src` + `tests`; pytest with coverage over the same tree. Tests emphasize the **release decision path** (arbitration, inference result normalization, loopback integration) and **golden checks** for batch ranking, release gates, log stability windows, Pillow-based vision metrics, and OpenCV exposure validation—see `tests/`.
+- **CI scope**: Ruff on `src` + `tests` + `app.py` + `test_connection.py`; **mypy** on `src` then on `app.py` / `test_connection.py` with `MYPYPATH=src`; pytest with coverage (including **`--cov-fail-under=34`**). Tests emphasize the **release decision path** (arbitration, inference result normalization, loopback integration) and **golden checks** for batch ranking, release gates, log stability windows, Pillow-based vision metrics, and OpenCV exposure validation—see `tests/`.
 
 </details>
 
@@ -174,6 +174,8 @@ docker run --rm \
 python -m pip install -U pip
 pip install -e ".[dev]"
 ruff check src tests app.py test_connection.py
+mypy --explicit-package-bases src
+MYPYPATH=src mypy --explicit-package-bases app.py test_connection.py
 PYTHONPATH=src pytest
 ```
 
