@@ -178,11 +178,7 @@ Workflow reference: `.github/workflows/ci.yml`
 
 **Docs**
 
-- Integrator quick start (3-minute backend, HTTP contract, troubleshooting): [`docs/IntegrationGuide.md`](docs/IntegrationGuide.md)
-- DevRel-style case study (docs / samples / versioning vs README design choices): [`docs/AdvocacyCaseStudy.md`](docs/AdvocacyCaseStudy.md)
 - Architecture and provider details: [`docs/Architecture.md`](docs/Architecture.md)
-- Interview rehearsal outlines (spoken arc, not handout copy): [`docs/InterviewNarratives.md`](docs/InterviewNarratives.md)
-- Long-form narrative (self-healing vision QA, English): [`docs/linkedin-self-healing-vision-qa.md`](docs/linkedin-self-healing-vision-qa.md)
 - For benchmark, repeatability, and reliability narratives, use docs + report artifacts under `results/`.
 
 **Roadmap**

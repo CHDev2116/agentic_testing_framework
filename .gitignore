@@ -31,3 +31,9 @@ test_images/
 
 # Packaging artifacts
 *.egg-info/
+
+# Local-only / interview prep (not part of public repo story)
+docs/IntegrationGuide.md
+docs/AdvocacyCaseStudy.md
+docs/InterviewNarratives.md
+docs/linkedin-self-healing-vision-qa.md

@@ -1,3 +1,6 @@
+# Repository / agent behavior
+- Do not add, commit, or suggest pushing interview scripts, LinkedIn drafts, or other personal narrative markdown under `docs/` unless the user explicitly asks. Technical docs (e.g. `docs/Architecture.md`) are fine.
+
 # Code Review Standards
 - All Python async functions must include detailed logging.
 - Test scripts must include API timeout handling.
