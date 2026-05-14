@@ -62,7 +62,7 @@ Compare **Manual Baseline (for contrast)** vs **AI Pipeline (real)**, side-by-si
 
 Streamlit UI: generated sample input, **Manual Baseline** vs **AI Pipeline** side-by-side (score, confidence, label, latency), and score delta summary.
 
-![Streamlit demo: baseline vs AI pipeline comparison](assets/demo.png)
+![Streamlit demo: baseline vs AI pipeline comparison](assets/streamlit-comparison.png)
 
 Optional: add a short screen recording as `assets/demo.gif` and reference it here for motion (e.g. clicking **Analyze** / **Compare Both Modes**).
 
