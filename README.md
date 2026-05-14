@@ -60,9 +60,11 @@ Compare **Manual Baseline (for contrast)** vs **AI Pipeline (real)**, side-by-si
 <details>
 <summary><strong>Demo preview & optional assets</strong></summary>
 
-![Framework Demo](assets/demo.gif)
+Streamlit UI: generated sample input, **Manual Baseline** vs **AI Pipeline** side-by-side (score, confidence, label, latency), and score delta summary.
 
-If the GIF is not available yet, add a screenshot as `assets/demo.png` and update the image path above.
+![Streamlit demo: baseline vs AI pipeline comparison](assets/demo.png)
+
+Optional: add a short screen recording as `assets/demo.gif` and reference it here for motion (e.g. clicking **Analyze** / **Compare Both Modes**).
 
 </details>
 
