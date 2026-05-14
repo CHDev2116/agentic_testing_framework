@@ -95,7 +95,7 @@ If the GIF is not available yet, add a screenshot as `assets/demo.png` and updat
 - **Decision policy**: conservative release gating (`GO` / `REVIEW` / `NO_GO`).
 - **Loopback**: `NO_GO` recovery includes brighten/dim/sharpen strategies under retry limits.
 - **Retention**: auto-clean for `batch_report_*.json` and `error_report_*.json` after 14 days.
-- **CI scope**: lint/test coverage follows `.github/workflows/ci.yml` selected `src` paths plus `tests`.
+- **CI scope**: Ruff on `src` + `tests`; pytest with coverage over the same tree. Tests emphasize the **release decision path** (arbitration, inference result normalization, loopback integration) and **golden checks** for batch ranking, release gates, log stability windows, Pillow-based vision metrics, and OpenCV exposure validation—see `tests/`.
 
 </details>
 
@@ -182,14 +182,17 @@ Workflow reference: `.github/workflows/ci.yml`
 - Architecture and provider details: [`docs/Architecture.md`](docs/Architecture.md)
 - For benchmark, repeatability, and reliability narratives, use docs + report artifacts under `results/`.
 
-**Roadmap**
+**Roadmap (shipped)**
 
 - [x] Multi-backend inference abstraction
 - [x] Batch ranking + release arbitration
 - [x] Repeatability / performance / overhead analysis
 - [x] Automated JSON error reporting with retention
-- [ ] Multi-threading optimization for larger datasets
-- [ ] Extended visual diagnostics (OpenCV-based)
+
+**Backlog (intentionally deferred)**
+
+- **Multi-threading for very large batches**: not on the near-term roadmap so batch runs stay **single-threaded and easier to reproduce** in CI, benchmarks, and incident debugging. Revisit only after profiling shows preprocessing (not inference I/O) as the clear bottleneck.
+- **Extended OpenCV visual diagnostics**: basic histogram-based exposure checks already live in `engine/image_validator.py`; richer diagnostics (e.g. saliency, segmentation-assisted QA) stay **out of scope** until there is a concrete partner or product requirement, to avoid scope creep ahead of a stable inference contract.
 
 </details>
 
