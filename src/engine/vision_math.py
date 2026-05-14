@@ -20,8 +20,8 @@ def calculate_metrics(photo_path):
             img_gray = img.convert("L")
             # 2. Downscale image for faster computation (128x128).
             img_small = img_gray.resize((128, 128))
-            # 3. Ensure all pixel values are integers.
-            pixels = [int(p) for p in list(img_small.getdata())]
+            # Flattened pixel stream (Pillow 10+); avoids deprecated getdata() (removed in Pillow 14).
+            pixels = [int(p) for p in img_small.get_flattened_data()]
 
         if not pixels:
             return None

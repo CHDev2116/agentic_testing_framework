@@ -44,7 +44,7 @@ Without `PYTHONPATH=src`, **Manual Baseline** still works; **AI Pipeline** needs
 PYTHONPATH=src pytest
 ```
 
-Coverage options are defined in `pyproject.toml` (`--cov=src`, XML report for tooling).
+Coverage options are defined in `pyproject.toml` (`--cov=src`, XML report, and **`--cov-fail-under=32`** so total coverage cannot drift far below current levels without CI failing).
 
 ## Lint
 
