@@ -3,7 +3,7 @@ import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from PIL import Image
 
@@ -42,7 +42,7 @@ def run_test_pipeline(work_dir: Optional[Path] = None) -> None:
     # Slight variation so sharpness / brightness are non-trivial vs flat fields.
     Image.new("RGB", (64, 64), (118, 120, 119)).save(mock_photo, format="JPEG", quality=95)
 
-    report = {"timestamp": datetime.now().isoformat(), "test_cases": []}
+    report: dict[str, Any] = {"timestamp": datetime.now().isoformat(), "test_cases": []}
 
     try:
         logger.info("Checking whether file exists: %s", mock_photo)

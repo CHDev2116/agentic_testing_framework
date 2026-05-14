@@ -11,7 +11,7 @@ Thanks for helping improve this project. Small, focused changes are easier to re
 
 **All pinned runtime dependencies are defined in `pyproject.toml` under `[project.dependencies]`.** Do not maintain a second copy of version pins elsewhere.
 
-- **Developers / CI**: `pip install -e ".[dev]"` (includes pytest, coverage, Ruff).
+- **Developers / CI**: `pip install -e ".[dev]"` (includes pytest, coverage, Ruff, and mypy).
 - **Optional**: `pip install -r requirements.txt` — this file only contains `-e .[dev]` as a convenience shim for older habits or docs that still use `-r`.
 
 When you add or bump a dependency, edit **`pyproject.toml` only**, then reinstall your venv.
@@ -44,7 +44,7 @@ Without `PYTHONPATH=src`, **Manual Baseline** still works; **AI Pipeline** needs
 PYTHONPATH=src pytest
 ```
 
-Coverage options are defined in `pyproject.toml` (`--cov=src`, XML report, and **`--cov-fail-under=32`** so total coverage cannot drift far below current levels without CI failing).
+Coverage options are defined in `pyproject.toml` (`--cov=src`, XML report, and **`--cov-fail-under=34`** so total coverage cannot drift far below current levels without CI failing).
 
 ## Lint
 
@@ -52,6 +52,15 @@ CI runs Ruff on the full Python tree under `src` plus `tests`. Match it before o
 
 ```bash
 ruff check src tests app.py test_connection.py
+```
+
+## Type check (mypy)
+
+Settings live in `pyproject.toml` under `[tool.mypy]`. Run the same checks as CI (two passes avoid duplicate module mapping for `src/` vs repo-root scripts):
+
+```bash
+mypy --explicit-package-bases src
+MYPYPATH=src mypy --explicit-package-bases app.py test_connection.py
 ```
 
 ## Optional: agent smoke run (CI parity)
@@ -67,7 +76,7 @@ PYTHONPATH=src python src/ai_quality_agent.py --profile dev --performance-analys
 1. **Branch**: Open PRs against the repository default branch (usually `main`).
 2. **Scope**: One logical change per PR when possible (feature, fix, or docs—not all mixed unless tightly related).
 3. **Description**: Summarize *what* changed and *why*; link an issue if one exists.
-4. **Green CI**: Ensure tests and the lint step above pass locally.
+4. **Green CI**: Ensure tests, Ruff, and **mypy** pass locally.
 5. **Docs**: If you change CLI flags, config shape, or inference behavior, update `README.md` and any affected file under `docs/`.
 
 ## Code style

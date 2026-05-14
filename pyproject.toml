@@ -83,6 +83,7 @@ dev = [
     "pytest",
     "pytest-cov",
     "ruff",
+    "mypy",
 ]
 
 [tool.setuptools]
@@ -100,5 +101,13 @@ py-modules = [
 where = ["src"]
 
 [tool.pytest.ini_options]
-addopts = "-q --cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=32"
+addopts = "-q --cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=34"
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+explicit_package_bases = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = false
+disallow_untyped_defs = false

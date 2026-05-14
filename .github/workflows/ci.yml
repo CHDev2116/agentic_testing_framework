@@ -29,6 +29,11 @@ jobs:
       - name: Lint
         run: ruff check src tests app.py test_connection.py
 
+      - name: Type check (mypy)
+        run: |
+          mypy --explicit-package-bases src
+          MYPYPATH=src mypy --explicit-package-bases app.py test_connection.py
+
       - name: Unit tests with coverage
         run: |
           PYTHONPATH=src pytest

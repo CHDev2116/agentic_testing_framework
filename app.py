@@ -5,7 +5,7 @@ import re
 import random
 import time
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Protocol, Tuple, cast
 
 import numpy as np
 import streamlit as st
@@ -21,28 +21,24 @@ try:
     from agent.orchestrator import QualityOrchestrator as _QualityOrchestrator
 
     QualityOrchestrator = _QualityOrchestrator
-except ImportError:
-    try:
-        from src.agent.orchestrator import QualityOrchestrator as _QualityOrchestratorSrc
-
-        QualityOrchestrator = _QualityOrchestratorSrc
-        logger.info(
-            "Loaded QualityOrchestrator via src.agent (PYTHONPATH should include the repository root)."
-        )
-    except ImportError as exc:
-        logger.warning(
-            "QualityOrchestrator not importable (%s). From repo root run: "
-            "PYTHONPATH=src streamlit run app.py",
-            exc,
-        )
+except ImportError as exc:
+    logger.warning(
+        "QualityOrchestrator not importable (%s). From repo root run: "
+        "PYTHONPATH=src streamlit run app.py",
+        exc,
+    )
 
 
-def _get_orchestrator() -> Optional[object]:
+class _PipelineRunner(Protocol):
+    def run_pipeline(self, image_metrics: Dict[str, object]) -> Dict[str, object]: ...
+
+
+def _get_orchestrator() -> Optional[_PipelineRunner]:
     if QualityOrchestrator is None:
         return None
     if "orchestrator" not in st.session_state:
         st.session_state["orchestrator"] = QualityOrchestrator()
-    return st.session_state["orchestrator"]
+    return cast(_PipelineRunner, st.session_state["orchestrator"])
 
 
 def _build_sample_image() -> Image.Image:
@@ -63,7 +59,7 @@ def _load_sample_image() -> Tuple[Image.Image, str]:
     return _build_sample_image(), "generated"
 
 
-def _extract_metrics(image: Image.Image) -> Dict[str, float]:
+def _extract_metrics(image: Image.Image) -> Dict[str, object]:
     gray = np.asarray(image.convert("L"), dtype=np.float32)
     brightness = float(gray.mean())
     noise_level = float(gray.std())
