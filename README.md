@@ -29,6 +29,7 @@ This repo optimizes for **integrators**: swap runtimes without rewriting the bat
 
 - Set `model_settings.inference.backend` in `configs/*.json` to one of: `simulated`, `ollama_vision`, `mock_api`, `llama_cpp`.
 - For ad-hoc runs, the CLI can override without editing files: `python3 src/ai_quality_agent.py --profile dev --inference-backend mock_api` (see `--help`).
+- **Connecting a live model** (llama.cpp server or Ollama vision): see [`docs/ModelInferenceSetup.md`](docs/ModelInferenceSetup.md).
 - Composition root: `build_inference_engine()` in [`src/models/inference_adapter.py`](src/models/inference_adapter.py) selects the concrete engine class from config.
 
 Same codebase path runs locally (simulated / Ollama / llama.cpp HTTP) or against a mock HTTP API—**no forked “deploy-only” branch** unless your infra truly requires it.
@@ -140,6 +141,9 @@ python3 src/ai_quality_agent.py --profile benchmark --inference-backend mock_api
 python3 src/ai_quality_agent.py --profile dev --performance-analysis
 python3 src/ai_quality_agent.py --profile dev --stress-test-100 --performance-analysis
 python3 src/ai_quality_agent.py --profile dev --overhead-analysis
+python3 src/ai_quality_agent.py --profile dev --parallel-metrics
+python3 src/ai_quality_agent.py --profile dev --async-batch --async-concurrency 4
+python3 src/ai_quality_agent.py --profile dev --async-batch --parallel-metrics
 python3 src/test_failure_memory_retrieval.py
 ```
 
