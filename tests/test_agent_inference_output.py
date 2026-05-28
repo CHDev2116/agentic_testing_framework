@@ -1,4 +1,7 @@
+import pytest
+
 from ai_quality_agent import _build_agent_inference_output
+from models.contracts import AgentInferenceOutput, AgentStep
 
 
 def test_build_agent_inference_output_contains_steps():
@@ -38,4 +41,29 @@ def test_build_agent_inference_output_contains_steps():
     assert output["steps"][0]["fallback_used"] is True
     assert output["steps"][0]["metrics_before"]["avg_brightness"] == 10.0
     assert output["steps"][0]["metrics_after"]["avg_brightness"] == 42.0
+
+
+def test_agent_inference_output_rejects_inconsistent_total_latency():
+    with pytest.raises(ValueError, match="Total latency"):
+        AgentInferenceOutput(
+            image_path="images/a.jpg",
+            final_decision="NO_GO",
+            steps=[
+                AgentStep(
+                    attempt=1,
+                    signal="under",
+                    action="brighten",
+                    rationale="dark",
+                    latency_ms=15.0,
+                ),
+                AgentStep(
+                    attempt=2,
+                    signal="other",
+                    action="stop",
+                    rationale="stop",
+                    latency_ms=10.0,
+                ),
+            ],
+            total_latency_ms=20.0,
+        )
 

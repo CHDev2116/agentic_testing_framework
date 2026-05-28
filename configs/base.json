@@ -46,6 +46,9 @@
     },
     "runtime": {
         "oom_probability": 0.0,
+        "async_per_image_timeout_s": 0,
+        "async_backend_health_check": true,
+        "async_backend_health_timeout_s": 2.0,
         "loopback_planner": {
             "mode": "simulated",
             "require_healthy_on_startup": true,

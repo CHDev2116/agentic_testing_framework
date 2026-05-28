@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 @dataclass(frozen=True)
@@ -107,3 +107,14 @@ class AgentInferenceOutput(BaseModel):
         default_factory=list, description="Per-image agent decision trace"
     )
     total_latency_ms: float = Field(..., description="Total latency for the image")
+
+    @model_validator(mode="after")
+    def verify_latency_consistency(self) -> "AgentInferenceOutput":
+        steps_latency = sum(step.latency_ms for step in self.steps)
+        # Allow tiny floating-point rounding noise.
+        if self.total_latency_ms + 1e-6 < steps_latency:
+            raise ValueError(
+                f"Total latency ({self.total_latency_ms}ms) cannot be less than "
+                f"the sum of individual steps ({steps_latency}ms)."
+            )
+        return self

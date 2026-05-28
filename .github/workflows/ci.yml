@@ -50,6 +50,11 @@ jobs:
         run: |
           PYTHONPATH=src pytest
 
+      - name: Coverage baseline gate (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          python scripts/check_coverage_baseline.py --coverage-xml coverage.xml --baseline-file .ci/coverage_baseline.txt
+
   generate-reports:
     runs-on: ubuntu-latest
     needs: [lint-type-test]

@@ -89,6 +89,22 @@ bash scripts/dev_prepush_check.sh
 
 This keeps PR feedback fast and avoids common red-X cycles caused by lint/type/test drift.
 
+## Coverage baseline gate (ratchet-lite)
+
+PR CI enforces two coverage constraints:
+
+- `--cov-fail-under=34` from `pyproject.toml` (absolute floor)
+- `.ci/coverage_baseline.txt` (no-regression gate for current baseline)
+
+Local check:
+
+```bash
+PYTHONPATH=src pytest
+python scripts/check_coverage_baseline.py --coverage-xml coverage.xml --baseline-file .ci/coverage_baseline.txt
+```
+
+When you intentionally improve and stabilize coverage, raise `.ci/coverage_baseline.txt` in the same PR.
+
 ## Code style
 
 Follow existing patterns in nearby modules (logging, typing, error messages). Prefer clear names and small functions over clever one-liners.

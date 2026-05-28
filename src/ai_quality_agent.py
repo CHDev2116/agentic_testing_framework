@@ -4,9 +4,11 @@ import json
 import logging
 import os
 import random
+import socket
 import threading
 import time
 import traceback
+from urllib.parse import urlparse
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
@@ -231,6 +233,9 @@ def _apply_runtime_overrides(
     planner_timeout_s_override: Optional[float] = None,
     planner_model_override: Optional[str] = None,
     planner_require_healthy_override: Optional[bool] = None,
+    async_per_image_timeout_s_override: Optional[float] = None,
+    async_backend_health_check_override: Optional[bool] = None,
+    async_backend_health_timeout_s_override: Optional[float] = None,
 ):
     source = config_source
     if inference_backend_override:
@@ -257,7 +262,87 @@ def _apply_runtime_overrides(
         source = (
             f"{source} + CLI(planner_require_healthy={planner_require_healthy_override})"
         )
+    if async_per_image_timeout_s_override is not None:
+        config.setdefault("runtime", {})
+        config["runtime"]["async_per_image_timeout_s"] = float(
+            async_per_image_timeout_s_override
+        )
+        source = (
+            f"{source} + CLI(async_per_image_timeout_s={async_per_image_timeout_s_override})"
+        )
+    if async_backend_health_check_override is not None:
+        config.setdefault("runtime", {})
+        config["runtime"]["async_backend_health_check"] = bool(
+            async_backend_health_check_override
+        )
+        source = (
+            f"{source} + CLI(async_backend_health_check={async_backend_health_check_override})"
+        )
+    if async_backend_health_timeout_s_override is not None:
+        config.setdefault("runtime", {})
+        config["runtime"]["async_backend_health_timeout_s"] = float(
+            async_backend_health_timeout_s_override
+        )
+        source = (
+            f"{source} + CLI(async_backend_health_timeout_s={async_backend_health_timeout_s_override})"
+        )
     return source
+
+
+def _extract_host_port_for_healthcheck(engine: Any) -> Optional[tuple[str, int]]:
+    backend = str(getattr(engine, "backend_name", ""))
+    if backend == "simulated":
+        return None
+    if backend in {"llama_cpp", "ollama_vision"}:
+        base_url = str(getattr(engine, "host", ""))
+    elif backend == "mock_api":
+        base_url = str(getattr(engine, "url", ""))
+    else:
+        return None
+
+    parsed = urlparse(base_url if "://" in base_url else f"http://{base_url}")
+    if not parsed.hostname:
+        return None
+    if parsed.port is not None:
+        return parsed.hostname, int(parsed.port)
+    return parsed.hostname, 443 if parsed.scheme == "https" else 80
+
+
+def _run_async_backend_health_check(
+    engine: Any,
+    *,
+    enabled: bool,
+    timeout_s: float,
+) -> None:
+    if not enabled:
+        logger.info("Async backend health check: skipped by configuration")
+        return
+
+    host_port = _extract_host_port_for_healthcheck(engine)
+    if host_port is None:
+        logger.info(
+            "Async backend health check: skipped for backend=%s",
+            getattr(engine, "backend_name", type(engine).__name__),
+        )
+        return
+
+    host, port = host_port
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            logger.info(
+                "Async backend health check: reachable backend=%s host=%s port=%s timeout_s=%.2f",
+                getattr(engine, "backend_name", type(engine).__name__),
+                host,
+                port,
+                timeout_s,
+            )
+    except OSError as exc:
+        raise RuntimeError(
+            f"Async inference backend not reachable before batch run: "
+            f"backend={getattr(engine, 'backend_name', type(engine).__name__)} "
+            f"host={host} port={port} timeout_s={timeout_s}. "
+            "Start the backend service or use --async-skip-backend-health-check."
+        ) from exc
 
 
 class QuantizedVisionAgent:
@@ -1352,6 +1437,14 @@ def _finalize_batch_report(
         "release_decision_arbitration": arbitration_batch,
         "decision_reason": decision_reason,
     }
+    if batch_report.get("execution_mode") == "async":
+        batch_report["summary"]["async_timeout_count"] = int(
+            batch_report.get("async_timeout_count", 0)
+        )
+        if batch_report.get("async_per_image_timeout_s") is not None:
+            batch_report["summary"]["async_per_image_timeout_s"] = float(
+                batch_report["async_per_image_timeout_s"]
+            )
     batch_report["ranking"] = rankings
 
     report_path = save_batch_report(batch_report, config["folders"]["output"])
@@ -1426,6 +1519,9 @@ def run_batch_test(
     planner_timeout_s_override=None,
     planner_model_override=None,
     planner_require_healthy_override=None,
+    async_per_image_timeout_s_override=None,
+    async_backend_health_check_override=None,
+    async_backend_health_timeout_s_override=None,
     performance_analysis=False,
     overhead_analysis=False,
     stress_test_count=None,
@@ -1442,6 +1538,9 @@ def run_batch_test(
         planner_timeout_s_override=planner_timeout_s_override,
         planner_model_override=planner_model_override,
         planner_require_healthy_override=planner_require_healthy_override,
+        async_per_image_timeout_s_override=async_per_image_timeout_s_override,
+        async_backend_health_check_override=async_backend_health_check_override,
+        async_backend_health_timeout_s_override=async_backend_health_timeout_s_override,
     )
     logger.info("Loaded config source: %s", config_source)
 
@@ -1591,6 +1690,7 @@ async def _run_async_batch_processing(
     config_profile: str,
     config_source: str,
     concurrency: int,
+    per_image_timeout_s: Optional[float],
 ) -> None:
     semaphore = asyncio.Semaphore(max(1, concurrency))
     logger.info(
@@ -1604,12 +1704,31 @@ async def _run_async_batch_processing(
         async def _handle_photo(path: str) -> Dict[str, Any]:
             file_name = os.path.basename(path)
             try:
+                photo_task = _process_single_photo_async(
+                    path, photo_ctx, http_client, semaphore
+                )
+                outcome = (
+                    await asyncio.wait_for(photo_task, timeout=per_image_timeout_s)
+                    if per_image_timeout_s is not None and per_image_timeout_s > 0
+                    else await photo_task
+                )
                 return {
                     "status": "SUCCESS",
                     "file_name": file_name,
-                    "outcome": await _process_single_photo_async(
-                        path, photo_ctx, http_client, semaphore
-                    ),
+                    "outcome": outcome,
+                }
+            except asyncio.TimeoutError:
+                timeout_msg = (
+                    f"Per-image async timeout after {per_image_timeout_s}s while "
+                    f"processing {file_name}"
+                )
+                logger.warning(timeout_msg)
+                return {
+                    "status": "FAILED",
+                    "file_name": file_name,
+                    "error": timeout_msg,
+                    "error_type": "TimeoutError",
+                    "timed_out": True,
                 }
             except Exception as exc:
                 logger.exception("Failed to process file %s (async)", file_name)
@@ -1628,6 +1747,8 @@ async def _run_async_batch_processing(
                     "status": "FAILED",
                     "file_name": file_name,
                     "error": str(exc),
+                    "error_type": type(exc).__name__,
+                    "timed_out": False,
                 }
 
         outcomes = await gather_with_timing(
@@ -1650,6 +1771,8 @@ async def _run_async_batch_processing(
                 "file": item["file_name"],
                 "status": "FAILED",
                 "error": item["error"],
+                "error_type": item.get("error_type", "Exception"),
+                "timed_out": bool(item.get("timed_out", False)),
             })
 
 
@@ -1662,6 +1785,9 @@ def run_batch_test_async(
     planner_timeout_s_override=None,
     planner_model_override=None,
     planner_require_healthy_override=None,
+    async_per_image_timeout_s_override=None,
+    async_backend_health_check_override=None,
+    async_backend_health_timeout_s_override=None,
     performance_analysis=False,
     overhead_analysis=False,
     stress_test_count=None,
@@ -1685,6 +1811,9 @@ def run_batch_test_async(
         planner_timeout_s_override=planner_timeout_s_override,
         planner_model_override=planner_model_override,
         planner_require_healthy_override=planner_require_healthy_override,
+        async_per_image_timeout_s_override=async_per_image_timeout_s_override,
+        async_backend_health_check_override=async_backend_health_check_override,
+        async_backend_health_timeout_s_override=async_backend_health_timeout_s_override,
     )
     logger.info(
         "Loaded config source: %s (async batch, concurrency=%s, parallel_metrics=%s)",
@@ -1702,6 +1831,11 @@ def run_batch_test_async(
         agent = QuantizedVisionAgent(
             config,
             metrics_pool=metrics_pool if parallel_metrics else None,
+        )
+        _run_async_backend_health_check(
+            agent.inference_engine,
+            enabled=bool(config.get("runtime", {}).get("async_backend_health_check", True)),
+            timeout_s=float(config.get("runtime", {}).get("async_backend_health_timeout_s", 2.0)),
         )
         return _run_batch_test_async_body(
             agent=agent,
@@ -1760,6 +1894,17 @@ def _run_batch_test_async_body(
         "async_concurrency": max(1, int(concurrency)),
         "results": [],
     }
+    per_image_timeout_s = config.get("runtime", {}).get("async_per_image_timeout_s")
+    if per_image_timeout_s is not None:
+        try:
+            timeout_val = float(per_image_timeout_s)
+            if timeout_val > 0:
+                batch_report["async_per_image_timeout_s"] = timeout_val
+                per_image_timeout_s = timeout_val
+            else:
+                per_image_timeout_s = None
+        except (TypeError, ValueError):
+            per_image_timeout_s = None
     if parallel_metrics:
         batch_report["parallel_metrics"] = True
         batch_report["metrics_workers"] = metrics_workers
@@ -1791,7 +1936,12 @@ def _run_batch_test_async_body(
             config_profile,
             config_source,
             concurrency=max(1, int(concurrency)),
+            per_image_timeout_s=per_image_timeout_s,
         )
+    )
+
+    batch_report["async_timeout_count"] = sum(
+        1 for row in batch_report["results"] if bool(row.get("timed_out"))
     )
 
     return _finalize_batch_report(
@@ -2041,6 +2191,23 @@ if __name__ == "__main__":
         help="Max concurrent images when --async-batch is set (default: 4)",
     )
     parser.add_argument(
+        "--async-per-image-timeout-s",
+        type=float,
+        default=None,
+        help="Timeout per image in async batch mode (seconds); timed-out images are marked FAILED",
+    )
+    parser.add_argument(
+        "--async-skip-backend-health-check",
+        action="store_true",
+        help="Skip fail-fast connectivity check for async inference backend",
+    )
+    parser.add_argument(
+        "--async-backend-health-timeout-s",
+        type=float,
+        default=None,
+        help="Socket timeout (seconds) for async backend startup health check",
+    )
+    parser.add_argument(
         "--parallel-metrics",
         action="store_true",
         help="Compute sharpness/brightness metrics in a ProcessPoolExecutor (CPU-bound speedup)",
@@ -2087,6 +2254,11 @@ if __name__ == "__main__":
                 planner_require_healthy_override=(
                     False if args.planner_skip_health_check else None
                 ),
+                async_per_image_timeout_s_override=args.async_per_image_timeout_s,
+                async_backend_health_check_override=(
+                    False if args.async_skip_backend_health_check else None
+                ),
+                async_backend_health_timeout_s_override=args.async_backend_health_timeout_s,
                 performance_analysis=args.performance_analysis,
                 overhead_analysis=args.overhead_analysis,
                 stress_test_count=100 if args.stress_test_100 else None,

@@ -182,7 +182,10 @@ python3 src/ai_quality_agent.py --profile dev --stress-test-100 --performance-an
 python3 src/ai_quality_agent.py --profile dev --overhead-analysis
 python3 src/ai_quality_agent.py --profile dev --parallel-metrics
 python3 src/ai_quality_agent.py --profile dev --async-batch --async-concurrency 4
+python3 src/ai_quality_agent.py --profile dev --async-batch --async-concurrency 4 --async-per-image-timeout-s 20
+python3 src/ai_quality_agent.py --profile dev --async-batch --async-backend-health-timeout-s 1.5
 python3 src/ai_quality_agent.py --profile dev --async-batch --loopback-planner llm
+python3 src/ai_quality_agent.py --profile dev --async-batch --async-skip-backend-health-check
 python3 src/ai_quality_agent.py --profile dev --async-batch --parallel-metrics
 python3 src/test_failure_memory_retrieval.py
 ```
@@ -227,6 +230,7 @@ ruff check src tests app.py test_connection.py
 mypy --explicit-package-bases src
 MYPYPATH=src mypy --explicit-package-bases app.py test_connection.py
 PYTHONPATH=src pytest
+python scripts/check_coverage_baseline.py --coverage-xml coverage.xml --baseline-file .ci/coverage_baseline.txt
 ```
 
 Docker and other installs use **`pyproject.toml` only** for dependency pins (`pip install .` in the Dockerfile). The `requirements.txt` shim is optional for local workflows.
@@ -254,6 +258,20 @@ Workflow reference: `.github/workflows/ci.yml`
 
 - **Multi-threading for very large batches**: not on the near-term roadmap so batch runs stay **single-threaded and easier to reproduce** in CI, benchmarks, and incident debugging. Revisit only after profiling shows preprocessing (not inference I/O) as the clear bottleneck.
 - **Extended OpenCV visual diagnostics**: basic histogram-based exposure checks already live in `engine/image_validator.py`; richer diagnostics (e.g. saliency, segmentation-assisted QA) stay **out of scope** until there is a concrete partner or product requirement, to avoid scope creep ahead of a stable inference contract.
+
+**Future roadmap (agentic testing hardening)**
+
+- **Deterministic replay mode (VCR-style)**  
+  Priority: **P0** | Effort: **M** | Impact: **High**  
+  Record planner prompts/responses and decision-state transitions on a known-good run, then support playback-only regression mode to eliminate flaky LLM variance and reduce token spend.
+
+- **Adaptive backoff + dynamic concurrency**  
+  Priority: **P1** | Effort: **M-L** | Impact: **High**  
+  Evolve from fixed semaphore limits to runtime-aware rate control (429/503 detection, exponential backoff with jitter, and temporary permit reduction) so test loops remain stable under service pressure.
+
+- **Schema-driven auto assertion generation**  
+  Priority: **P2** | Effort: **L** | Impact: **High**  
+  Use observed response samples and Pydantic contracts to infer boundary/type assertions and scaffold `tests/test_generated_*.py` candidates, reducing manual test-authoring overhead for newly explored paths.
 
 </details>
 

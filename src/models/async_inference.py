@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Dict
 
 import httpx
@@ -22,6 +23,22 @@ from models.inference_adapter import (
 from models.contracts import InferenceOutput
 
 logger = logging.getLogger(__name__)
+_WARNING_DEDUP_WINDOW_S = 5.0
+_LAST_WARNING_AT: Dict[str, float] = {}
+
+
+def _warning_dedup_key(scope: str, url: str, exc: Exception) -> str:
+    return f"{scope}|{url}|{type(exc).__name__}|{exc}"
+
+
+def _warn_with_dedup(scope: str, url: str, exc: Exception) -> None:
+    key = _warning_dedup_key(scope, url, exc)
+    now = time.monotonic()
+    last_at = _LAST_WARNING_AT.get(key)
+    if last_at is not None and (now - last_at) < _WARNING_DEDUP_WINDOW_S:
+        return
+    _LAST_WARNING_AT[key] = now
+    logger.warning("%s: request failed url=%s error=%s", scope, url, exc)
 
 
 async def predict_quality_async(
@@ -93,11 +110,7 @@ async def _llama_cpp_predict_async(
             backend=engine.backend_name,
         ).to_dict()
     except Exception as exc:
-        logger.warning(
-            "predict_quality_async(llama_cpp): request failed url=%s error=%s",
-            url,
-            exc,
-        )
+        _warn_with_dedup("predict_quality_async(llama_cpp)", url, exc)
         if engine.fallback_to_simulated:
             fallback = await asyncio.to_thread(
                 engine.simulated_fallback.predict_quality, photo_path, metrics
@@ -150,11 +163,7 @@ async def _ollama_predict_async(
             backend=engine.backend_name,
         ).to_dict()
     except Exception as exc:
-        logger.warning(
-            "predict_quality_async(ollama): request failed url=%s error=%s",
-            url,
-            exc,
-        )
+        _warn_with_dedup("predict_quality_async(ollama)", url, exc)
         if engine.fallback_to_simulated:
             fallback = await asyncio.to_thread(
                 engine.simulated_fallback.predict_quality, photo_path, metrics
@@ -207,11 +216,7 @@ async def _mock_api_predict_async(
             backend=engine.backend_name,
         ).to_dict()
     except Exception as exc:
-        logger.warning(
-            "predict_quality_async(mock_api): request failed url=%s error=%s",
-            engine.url,
-            exc,
-        )
+        _warn_with_dedup("predict_quality_async(mock_api)", engine.url, exc)
         if engine.fallback_to_simulated:
             fallback = await asyncio.to_thread(
                 engine.simulated_fallback.predict_quality, photo_path, metrics
