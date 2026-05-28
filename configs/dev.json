@@ -6,7 +6,7 @@
         "author": "Cheryl"
     },
     "model_settings": {
-        "name": "PixelQA-Llama-4bit",
+        "name": "Agentic Testing Framework - Llama 4-bit",
         "bit_depth": 4,
         "quantization_format": "GGUF",
         "inference": {
@@ -33,7 +33,11 @@
         "logs": "logs/dev"
     },
     "runtime": {
-        "oom_probability": 0.0
+        "oom_probability": 0.0,
+        "loopback_planner": {
+            "mode": "simulated",
+            "require_healthy_on_startup": true
+        }
     },
     "quality_gate": {
         "target_pass_rate": 80.0

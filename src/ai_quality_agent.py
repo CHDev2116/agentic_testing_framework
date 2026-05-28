@@ -1,18 +1,30 @@
 import argparse
+import asyncio
 import json
+import logging
 import os
 import random
 import threading
 import time
 import traceback
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from statistics import pvariance
+from typing import Any, Dict, List, Optional
 
+import httpx
 from PIL import Image, ImageDraw, ImageEnhance
 import psutil
 
+from util.cli_logging import configure_cli_logging
 from util.failure_memory import FailureMemoryStore
+from util.metrics_pool import MetricsProcessPool
+from util.monitor_performance import async_monitor_performance, gather_with_timing
+from agent.loopback_planner import (
+    SimulatedLoopbackPlanner,
+    create_loopback_planner,
+)
 from engine.image_processor import ImageProcessor
 from engine.vision_math import calculate_metrics
 from eval.arbitrator import (
@@ -25,7 +37,11 @@ from eval.benchmark_evaluator import (
     generate_benchmark_insights,
     get_release_decision,
 )
+from models.async_inference import predict_quality_async
+from models.contracts import AgentInferenceOutput, AgentStep
 from models.inference_adapter import build_inference_engine
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG = {
     "model_settings": {"name": "Default-Model", "bit_depth": 4},
@@ -85,7 +101,7 @@ def cleanup_old_reports(output_folder_path, max_age_days=REPORT_RETENTION_DAYS):
                 os.remove(file_path)
                 deleted_count += 1
         except OSError as e:
-            print(f"WARNING: Could not remove old report {file_path}: {e}")
+            logger.warning("Could not remove old report %s: %s", file_path, e)
 
     return deleted_count
 
@@ -124,7 +140,7 @@ def ensure_sample_images(image_folder_path):
             draw.line((idx, 0, idx, 127), fill=255 - intensity)
         image.save(os.path.join(image_folder_path, file_name))
 
-    print("No input images found. Generated sample dataset in input folder.")
+    logger.info("No input images found. Generated sample dataset in input folder.")
 
 
 def ensure_stress_test_images(image_folder_path, target_count=100):
@@ -164,7 +180,7 @@ def ensure_stress_test_images(image_folder_path, target_count=100):
             out_name = f"stress_{source_name}_{idx + 1:03d}.jpg"
             enhancer.save(os.path.join(image_folder_path, out_name), quality=90)
 
-    print(f"Stress-test mode: ensured at least {target_count} images in input folder.")
+    logger.info("Stress-test mode: ensured at least %s images in input folder.", target_count)
 
 
 def load_config(profile="dev", config_path=None):
@@ -206,14 +222,67 @@ def load_config(profile="dev", config_path=None):
     return merged_config, "DEFAULT_CONFIG"
 
 
+def _apply_runtime_overrides(
+    config: Dict[str, Any],
+    config_source: str,
+    *,
+    inference_backend_override: Optional[str] = None,
+    loopback_planner_override: Optional[str] = None,
+    planner_timeout_s_override: Optional[float] = None,
+    planner_model_override: Optional[str] = None,
+    planner_require_healthy_override: Optional[bool] = None,
+):
+    source = config_source
+    if inference_backend_override:
+        config.setdefault("model_settings", {}).setdefault("inference", {})
+        config["model_settings"]["inference"]["backend"] = inference_backend_override
+        source = f"{source} + CLI(backend={inference_backend_override})"
+    if loopback_planner_override:
+        config.setdefault("runtime", {}).setdefault("loopback_planner", {})
+        config["runtime"]["loopback_planner"]["mode"] = loopback_planner_override
+        source = f"{source} + CLI(loopback_planner={loopback_planner_override})"
+    if planner_timeout_s_override is not None:
+        config.setdefault("runtime", {}).setdefault("loopback_planner", {}).setdefault("llm", {})
+        config["runtime"]["loopback_planner"]["llm"]["timeout_s"] = float(planner_timeout_s_override)
+        source = f"{source} + CLI(planner_timeout_s={planner_timeout_s_override})"
+    if planner_model_override:
+        config.setdefault("runtime", {}).setdefault("loopback_planner", {}).setdefault("llm", {})
+        config["runtime"]["loopback_planner"]["llm"]["model"] = planner_model_override
+        source = f"{source} + CLI(planner_model={planner_model_override})"
+    if planner_require_healthy_override is not None:
+        config.setdefault("runtime", {}).setdefault("loopback_planner", {})
+        config["runtime"]["loopback_planner"]["require_healthy_on_startup"] = bool(
+            planner_require_healthy_override
+        )
+        source = (
+            f"{source} + CLI(planner_require_healthy={planner_require_healthy_override})"
+        )
+    return source
+
+
 class QuantizedVisionAgent:
-    def __init__(self, config):
+    def __init__(self, config, metrics_pool: Optional[MetricsProcessPool] = None):
         self.config = config
         self.model_info = config["model_settings"]
         self.inference_engine = build_inference_engine(config)
+        self.metrics_pool = metrics_pool
         self.oom_probability = float(config.get("runtime", {}).get("oom_probability", 0.0))
-        print(f"Startup mode: {self.model_info['name']} ({self.model_info['bit_depth']}-bit)")
-        print(f"Inference backend: {self.inference_engine.backend_name}")
+        logger.info(
+            "Startup mode: %s (%s-bit)",
+            self.model_info["name"],
+            self.model_info["bit_depth"],
+        )
+        logger.info("Inference backend: %s", self.inference_engine.backend_name)
+        if metrics_pool is not None:
+            logger.info(
+                "Metrics compute: process pool (max_workers=%s)",
+                metrics_pool.max_workers,
+            )
+
+    def _compute_metrics(self, photo_path: str):
+        if self.metrics_pool is not None:
+            return self.metrics_pool.calculate(photo_path)
+        return calculate_metrics(photo_path)
 
     def get_all_photos(self):
         folder_name = self.config["folders"]["input"]
@@ -234,12 +303,47 @@ class QuantizedVisionAgent:
 
     def analyze_photo_quality(self, photo_path):
         start_time = time.time()
-        metrics = calculate_metrics(photo_path)
+        metrics = self._compute_metrics(photo_path)
         if metrics is None:
             return None, {"decision": "Error", "code": "ERR_SYS_IO_404", "msg": "Unable to read file"}, 0
 
         ai_result = self.inference_engine.predict_quality(photo_path, metrics)
         latency = round((time.time() - start_time) * 1000, 2)
+        return metrics, ai_result, latency
+
+    @async_monitor_performance
+    async def analyze_photo_quality_async(
+        self, photo_path: str, http_client: httpx.AsyncClient
+    ):
+        logger.debug(
+            "analyze_photo_quality_async: path=%s backend=%s",
+            photo_path,
+            self.inference_engine.backend_name,
+        )
+        start_time = time.time()
+        if self.metrics_pool is not None:
+            loop = asyncio.get_running_loop()
+            metrics = await loop.run_in_executor(
+                self.metrics_pool.executor,
+                calculate_metrics,
+                photo_path,
+            )
+        else:
+            metrics = await asyncio.to_thread(calculate_metrics, photo_path)
+        if metrics is None:
+            logger.warning("analyze_photo_quality_async: unable to read %s", photo_path)
+            return None, {"decision": "Error", "code": "ERR_SYS_IO_404", "msg": "Unable to read file"}, 0
+
+        ai_result = await predict_quality_async(
+            self.inference_engine, http_client, photo_path, metrics
+        )
+        latency = round((time.time() - start_time) * 1000, 2)
+        logger.debug(
+            "analyze_photo_quality_async: done path=%s decision=%s latency_ms=%.2f",
+            photo_path,
+            ai_result.get("decision"),
+            latency,
+        )
         return metrics, ai_result, latency
 
 
@@ -256,13 +360,17 @@ def save_batch_report(report_data, output_folder):
 
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(report_data, f, indent=4, ensure_ascii=False)
-    print(f"\nBatch test completed. Full report saved to: {file_path}")
+    logger.info("Batch test completed. Full report saved to: %s", file_path)
 
     deleted_count = cleanup_old_reports(full_output_path)
     if deleted_count > 0:
-        print(f"Cleaned up {deleted_count} report(s) older than {REPORT_RETENTION_DAYS} days.")
+        logger.info(
+            "Cleaned up %s report(s) older than %s days.",
+            deleted_count,
+            REPORT_RETENTION_DAYS,
+        )
     current_report_count = count_reports(full_output_path)
-    print(f"Current report count: {current_report_count}")
+    logger.info("Current report count: %s", current_report_count)
     return file_path
 
 
@@ -272,7 +380,7 @@ def save_comparison_report(comparison_data, output_folder):
     file_path = comparison_dir / f"profile_comparison_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(comparison_data, f, indent=4, ensure_ascii=False)
-    print(f"Comparison report saved to: {file_path}")
+    logger.info("Comparison report saved to: %s", file_path)
     return str(file_path)
 
 
@@ -282,7 +390,7 @@ def save_repeatability_report(repeatability_data, output_folder):
     file_path = repeatability_dir / f"repeatability_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(repeatability_data, f, indent=4, ensure_ascii=False)
-    print(f"Repeatability report saved to: {file_path}")
+    logger.info("Repeatability report saved to: %s", file_path)
     return str(file_path)
 
 
@@ -292,7 +400,7 @@ def save_performance_report(performance_data, output_folder):
     file_path = performance_dir / f"performance_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(performance_data, f, indent=4, ensure_ascii=False)
-    print(f"Performance report saved to: {file_path}")
+    logger.info("Performance report saved to: %s", file_path)
     return str(file_path)
 
 
@@ -302,7 +410,7 @@ def save_overhead_report(overhead_data, output_folder):
     file_path = overhead_dir / f"overhead_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(overhead_data, f, indent=4, ensure_ascii=False)
-    print(f"Overhead report saved to: {file_path}")
+    logger.info("Overhead report saved to: %s", file_path)
     return str(file_path)
 
 
@@ -312,12 +420,13 @@ def save_error_report(error_data, output_folder):
     file_path = error_dir / f"error_report_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(error_data, f, indent=4, ensure_ascii=False)
-    print(f"Error report saved to: {file_path}")
+    logger.info("Error report saved to: %s", file_path)
     deleted_count = cleanup_old_error_reports(str(error_dir))
     if deleted_count > 0:
-        print(
-            f"Cleaned up {deleted_count} error report(s) older than "
-            f"{REPORT_RETENTION_DAYS} days."
+        logger.info(
+            "Cleaned up %s error report(s) older than %s days.",
+            deleted_count,
+            REPORT_RETENTION_DAYS,
         )
     return str(file_path)
 
@@ -339,7 +448,7 @@ def cleanup_old_error_reports(error_folder_path, max_age_days=REPORT_RETENTION_D
                 os.remove(file_path)
                 deleted_count += 1
         except OSError as e:
-            print(f"WARNING: Could not remove old error report {file_path}: {e}")
+            logger.warning("Could not remove old error report %s: %s", file_path, e)
 
     return deleted_count
 
@@ -395,34 +504,32 @@ def classify_loopback_signal(ai_result):
 
 
 def decide_loopback_action(signal, engine_metrics, thresholds_cfg, loopback_guard_cfg):
-    brightness = float(engine_metrics.get("avg_brightness", engine_metrics.get("brightness", 0.0)))
-    sharpness = float(engine_metrics.get("sharpness", 0.0))
-    min_brightness = float(thresholds_cfg.get("min_brightness", 40.0))
-    max_brightness = float(thresholds_cfg.get("max_brightness", 220.0))
-    min_sharpness = float(thresholds_cfg.get("min_sharpness", 20.0))
-    overexposure_stop_ratio = float(loopback_guard_cfg.get("overexposure_stop_ratio", 0.95))
-    underexposure_stop_ratio = float(loopback_guard_cfg.get("underexposure_stop_ratio", 1.05))
+    planner = SimulatedLoopbackPlanner()
+    plan = planner.plan(
+        signal=signal,
+        engine_metrics=engine_metrics,
+        thresholds_cfg=thresholds_cfg,
+        loopback_guard_cfg=loopback_guard_cfg,
+        attempt_history=[],
+    )
+    return plan.action, plan.stop_reason
 
-    if signal == "under":
-        if brightness >= min_brightness:
-            return None, "engine_disagrees_underexposed"
-        if brightness >= (max_brightness * overexposure_stop_ratio):
-            return None, "near_overexposure_guard"
-        return "brighten", "retry_scheduled"
 
-    if signal == "over":
-        if brightness <= max_brightness:
-            return None, "engine_disagrees_overexposed"
-        if brightness <= (min_brightness * underexposure_stop_ratio):
-            return None, "near_underexposure_guard"
-        return "dim", "retry_scheduled"
-
-    if signal == "blurry":
-        if sharpness >= min_sharpness:
-            return None, "engine_disagrees_blurry"
-        return "sharpen", "retry_scheduled"
-
-    return None, f"signal_not_recoverable ({signal})"
+def plan_next_action(
+    *,
+    signal: str,
+    engine_metrics: Dict[str, Any],
+    thresholds_cfg: Dict[str, Any],
+    loopback_guard_cfg: Dict[str, Any],
+):
+    planner = SimulatedLoopbackPlanner()
+    return planner.plan(
+        signal=signal,
+        engine_metrics=engine_metrics,
+        thresholds_cfg=thresholds_cfg,
+        loopback_guard_cfg=loopback_guard_cfg,
+        attempt_history=[],
+    )
 
 
 def summarize_performance(perf_samples):
@@ -480,6 +587,62 @@ def summarize_performance(perf_samples):
     }
 
 
+def _build_agent_inference_output(
+    *,
+    image_path: str,
+    attempt_history: List[Dict[str, Any]],
+    final_ai_result: Dict[str, Any],
+    total_latency_ms: float,
+) -> Dict[str, Any]:
+    steps: List[AgentStep] = []
+    for idx, attempt in enumerate(attempt_history):
+        signal = str(attempt.get("loopback_signal", "other")).lower()
+        if signal not in {"under", "over", "blurry", "other"}:
+            signal = "other"
+        action = str(attempt.get("action", "stop")).lower()
+        if action not in {"brighten", "dim", "sharpen", "stop"}:
+            action = "stop"
+        metrics_before = {
+            "avg_brightness": float(attempt.get("avg_brightness", 0.0)),
+            "sharpness": float(attempt.get("sharpness", 0.0)),
+        }
+        metrics_after = None
+        if idx + 1 < len(attempt_history):
+            next_attempt = attempt_history[idx + 1]
+            metrics_after = {
+                "avg_brightness": float(next_attempt.get("avg_brightness", 0.0)),
+                "sharpness": float(next_attempt.get("sharpness", 0.0)),
+            }
+        steps.append(
+            AgentStep(
+                attempt=int(attempt.get("attempt", idx + 1)),
+                signal=signal,
+                action=action,
+                rationale=str(attempt.get("rationale", "")),
+                fallback_used=bool(attempt.get("planner_fallback_used", False)),
+                metrics_before=metrics_before,
+                metrics_after=metrics_after,
+                latency_ms=float(attempt.get("latency_ms", 0.0)),
+            )
+        )
+
+    final_release = "NO_GO"
+    if attempt_history:
+        release = str(attempt_history[-1].get("release", "NO_GO")).upper()
+        if release in {"GO", "REVIEW", "NO_GO"}:
+            final_release = release
+
+    output = AgentInferenceOutput(
+        image_path=image_path,
+        final_decision=final_release,
+        error_code=str(final_ai_result.get("code", "SUCCESS_200")),
+        error_message=str(final_ai_result.get("msg", final_ai_result.get("decision", "Optimal"))),
+        steps=steps,
+        total_latency_ms=float(total_latency_ms),
+    )
+    return output.model_dump()
+
+
 def monitor_resources(stop_event, interval=0.1):
     cpu_usage = []
     memory_usage_mb = []
@@ -530,6 +693,506 @@ def collect_peak_resources_during(fn, *args, **kwargs):
     return result, monitor_result
 
 
+async def collect_peak_resources_during_async(awaitable_fn, *args):
+    stop_event = threading.Event()
+    monitor_result = {"peak_cpu_usage_pct": 0.0, "peak_memory_mb": 0.0}
+
+    def _runner():
+        nonlocal monitor_result
+        try:
+            monitor_result = monitor_resources(stop_event)
+        except Exception:
+            monitor_result = {"peak_cpu_usage_pct": 0.0, "peak_memory_mb": 0.0}
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    try:
+        result = await awaitable_fn(*args)
+    finally:
+        stop_event.set()
+        thread.join(timeout=1.0)
+    return result, monitor_result
+
+
+def _build_photo_process_context(config: Dict[str, Any], agent: QuantizedVisionAgent) -> Dict[str, Any]:
+    loopback_guard_cfg = config.get("runtime", {}).get("loopback_guard", {})
+    loopback_planner = create_loopback_planner(config)
+    return {
+        "agent": agent,
+        "image_processor": ImageProcessor(),
+        "loopback_planner": loopback_planner,
+        "max_retry": int(config.get("runtime", {}).get("max_retry", 3)),
+        "thresholds_cfg": config.get("thresholds", {}),
+        "loopback_guard_cfg": loopback_guard_cfg,
+        "min_brightness_gain": float(loopback_guard_cfg.get("min_brightness_gain", 4.0)),
+        "min_sharpness_gain": float(loopback_guard_cfg.get("min_sharpness_gain", 1.0)),
+        "brighten_factor": float(loopback_guard_cfg.get("brighten_factor", 1.2)),
+        "dim_factor": float(loopback_guard_cfg.get("dim_factor", 0.85)),
+        "overexposure_stop_ratio": float(loopback_guard_cfg.get("overexposure_stop_ratio", 0.95)),
+    }
+
+
+def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
+    agent = ctx["agent"]
+    image_processor = ctx["image_processor"]
+    file_name = os.path.basename(path)
+    file_stem = Path(file_name).stem
+    image_wall_start = time.perf_counter()
+
+    if random.random() < agent.oom_probability:
+        raise MemoryError("OOM Exception")
+
+    image_meta = get_image_metadata(path)
+    cpu_start = time.process_time()
+    attempt_history = []
+    current_path = path
+    final_metrics = None
+    final_ai_result = None
+    final_latency = 0.0
+    loopback_stop_reason = "not_triggered"
+    peak_cpu_usage_pct = 0.0
+    peak_memory_mb = 0.0
+
+    for attempt_idx in range(ctx["max_retry"] + 1):
+        (metrics, ai_result, latency), resource_peaks = collect_peak_resources_during(
+            agent.analyze_photo_quality, current_path
+        )
+        peak_cpu_usage_pct = max(peak_cpu_usage_pct, resource_peaks.get("peak_cpu_usage_pct", 0.0))
+        peak_memory_mb = max(peak_memory_mb, resource_peaks.get("peak_memory_mb", 0.0))
+        final_metrics = metrics
+        final_ai_result = ai_result
+        final_latency += latency
+
+        if not isinstance(metrics, dict):
+            attempt_history.append({
+                "attempt": attempt_idx + 1,
+                "image_path": current_path,
+                "model_decision": ai_result.get("decision"),
+                "error_code": ai_result.get("code"),
+                "release": "NO_GO",
+                "loopback_signal": "other",
+                "action": "stop",
+                "rationale": "metrics unavailable; stop loopback",
+                "latency_ms": latency,
+            })
+            loopback_stop_reason = "metrics_unavailable"
+            break
+
+        engine_metrics = {
+            "avg_brightness": metrics.get("avg_brightness", metrics.get("brightness", 0.0)),
+            "sharpness": metrics.get("sharpness", 0.0),
+        }
+        model_inference = {
+            "decision": ai_result.get("decision"),
+            "status": ai_result.get("decision"),
+            "confidence": ai_result.get("confidence"),
+        }
+        release_decision, _ = arbitrate_decision(
+            engine_metrics, model_inference, ctx["thresholds_cfg"]
+        )
+        loopback_signal = classify_loopback_signal(ai_result)
+        attempt_history.append({
+            "attempt": attempt_idx + 1,
+            "image_path": current_path,
+            "model_decision": ai_result.get("decision"),
+            "error_code": ai_result.get("code"),
+            "release": release_decision,
+            "loopback_signal": loopback_signal,
+            "action": "stop",
+            "rationale": "release resolved or awaiting planner decision",
+            "avg_brightness": round(float(engine_metrics.get("avg_brightness", 0.0)), 4),
+            "sharpness": round(float(engine_metrics.get("sharpness", 0.0)), 4),
+            "latency_ms": latency,
+        })
+
+        current_brightness = float(engine_metrics.get("avg_brightness", 0.0))
+        current_sharpness = float(engine_metrics.get("sharpness", 0.0))
+        if release_decision != "NO_GO":
+            loopback_stop_reason = "release_resolved"
+            break
+        if attempt_idx >= ctx["max_retry"]:
+            loopback_stop_reason = "max_retry_reached"
+            break
+
+        plan = ctx["loopback_planner"].plan(
+            signal=loopback_signal,
+            engine_metrics=engine_metrics,
+            thresholds_cfg=ctx["thresholds_cfg"],
+            loopback_guard_cfg=ctx.get("loopback_guard_cfg", {}),
+            attempt_history=attempt_history,
+        )
+        logger.info(
+            "Loopback planner for %s attempt=%s signal=%s action=%s stop_reason=%s rationale=%s",
+            file_name,
+            attempt_idx + 1,
+            loopback_signal,
+            plan.action,
+            plan.stop_reason,
+            plan.rationale,
+        )
+        attempt_history[-1]["planner_fallback_used"] = bool(plan.fallback_used)
+        attempt_history[-1]["planner_backend"] = str(plan.planner_backend)
+        attempt_history[-1]["action"] = str(plan.action or "stop")
+        attempt_history[-1]["rationale"] = str(plan.rationale)
+        if not plan.action:
+            loopback_stop_reason = plan.stop_reason
+            break
+
+        if len(attempt_history) >= 2:
+            prev_attempt = attempt_history[-2]
+            prev_signal = prev_attempt.get("loopback_signal")
+            prev_brightness = float(prev_attempt.get("avg_brightness", 0.0))
+            prev_sharpness = float(prev_attempt.get("sharpness", 0.0))
+            brightness_gain = current_brightness - prev_brightness
+            if prev_signal in {"under", "over"} and prev_signal != loopback_signal:
+                loopback_stop_reason = "oscillation_detected"
+                break
+            if plan.action == "brighten" and brightness_gain < ctx["min_brightness_gain"]:
+                loopback_stop_reason = f"insufficient_brightness_gain (<{ctx['min_brightness_gain']})"
+                break
+            if plan.action == "dim" and (prev_brightness - current_brightness) < ctx["min_brightness_gain"]:
+                loopback_stop_reason = f"insufficient_dimming_gain (<{ctx['min_brightness_gain']})"
+                break
+            if plan.action == "sharpen" and (current_sharpness - prev_sharpness) < ctx["min_sharpness_gain"]:
+                loopback_stop_reason = f"insufficient_sharpness_gain (<{ctx['min_sharpness_gain']})"
+                break
+
+        if plan.action == "brighten":
+            current_path = image_processor.adjust_brightness(
+                current_path,
+                level=ctx["brighten_factor"],
+                file_stem=file_stem,
+                attempt_idx=attempt_idx + 1,
+            )
+            logger.info(
+                "Loopback retry %s/%s for %s: detected under-exposed; brightness x%s and re-evaluate.",
+                attempt_idx + 1,
+                ctx["max_retry"],
+                file_name,
+                ctx["brighten_factor"],
+            )
+        elif plan.action == "dim":
+            current_path = image_processor.adjust_brightness(
+                current_path,
+                level=ctx["dim_factor"],
+                file_stem=file_stem,
+                attempt_idx=attempt_idx + 1,
+            )
+            logger.info(
+                "Loopback retry %s/%s for %s: detected over-exposed; brightness x%s and re-evaluate.",
+                attempt_idx + 1,
+                ctx["max_retry"],
+                file_name,
+                ctx["dim_factor"],
+            )
+        elif plan.action == "sharpen":
+            current_path = image_processor.apply_sharpen(
+                current_path,
+                file_stem=file_stem,
+                attempt_idx=attempt_idx + 1,
+            )
+            logger.info(
+                "Loopback retry %s/%s for %s: detected blurry signal; apply sharpen and re-evaluate.",
+                attempt_idx + 1,
+                ctx["max_retry"],
+                file_name,
+            )
+        loopback_stop_reason = f"retry_scheduled ({plan.action})"
+
+    cpu_delta = max(0.0, time.process_time() - cpu_start)
+    wall_delta = max(final_latency / 1000.0, 1e-6)
+    process_cpu_usage_pct = round((cpu_delta / wall_delta) * 100, 4)
+    logger.info(
+        "Processed %s: [%s] %s (%sms total)",
+        file_name,
+        (final_ai_result or {}).get("code", "?"),
+        (final_ai_result or {}).get("decision", "?"),
+        round(final_latency, 2),
+    )
+
+    image_wall_ms = (time.perf_counter() - image_wall_start) * 1000.0
+    model_latency_ms = float(round(final_latency, 2))
+    framework_wall_ms = max(0.0, image_wall_ms - model_latency_ms)
+
+    return {
+        "row": {
+            "file": file_name,
+            "metrics": final_metrics,
+            "decision": final_ai_result,
+            "inference_output": _build_agent_inference_output(
+                image_path=path,
+                attempt_history=attempt_history,
+                final_ai_result=final_ai_result or {},
+                total_latency_ms=round(final_latency, 2),
+            ),
+            "latency_ms": round(final_latency, 2),
+            "image_meta": image_meta,
+            "process_cpu_usage_pct": process_cpu_usage_pct,
+            "loopback": {
+                "max_retry": ctx["max_retry"],
+                "min_brightness_gain": ctx["min_brightness_gain"],
+                "min_sharpness_gain": ctx["min_sharpness_gain"],
+                "brighten_factor": ctx["brighten_factor"],
+                "dim_factor": ctx["dim_factor"],
+                "overexposure_stop_ratio": ctx["overexposure_stop_ratio"],
+                "retry_count": max(0, len(attempt_history) - 1),
+                "fallback_used_count": sum(
+                    1 for item in attempt_history if bool(item.get("planner_fallback_used"))
+                ),
+                "fallback_used": any(
+                    bool(item.get("planner_fallback_used")) for item in attempt_history
+                ),
+                "stop_reason": loopback_stop_reason,
+                "attempts": attempt_history,
+            },
+            "status": "SUCCESS",
+        },
+        "perf_sample": {
+            "file": file_name,
+            "latency_ms": round(final_latency, 2),
+            "process_cpu_usage_pct": process_cpu_usage_pct,
+            "peak_cpu_usage_pct": round(peak_cpu_usage_pct, 4),
+            "peak_memory_mb": round(peak_memory_mb, 4),
+            "image_resolution": f"{image_meta.get('width', 0)}x{image_meta.get('height', 0)}",
+            **image_meta,
+        },
+        "overhead": {
+            "image_wall_ms": image_wall_ms,
+            "model_latency_ms": model_latency_ms,
+            "framework_wall_ms": framework_wall_ms,
+            "loopback_retry_count": max(0, len(attempt_history) - 1),
+        },
+    }
+
+
+@async_monitor_performance
+async def _process_single_photo_async(
+    path: str,
+    ctx: Dict[str, Any],
+    http_client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+) -> Dict[str, Any]:
+    async with semaphore:
+        logger.debug("_process_single_photo_async: start path=%s", path)
+        agent = ctx["agent"]
+        image_processor = ctx["image_processor"]
+        file_name = os.path.basename(path)
+        file_stem = Path(file_name).stem
+        image_wall_start = time.perf_counter()
+
+        if random.random() < agent.oom_probability:
+            raise MemoryError("OOM Exception")
+
+        image_meta = await asyncio.to_thread(get_image_metadata, path)
+        cpu_start = time.process_time()
+        attempt_history = []
+        current_path = path
+        final_metrics = None
+        final_ai_result = None
+        final_latency = 0.0
+        loopback_stop_reason = "not_triggered"
+        peak_cpu_usage_pct = 0.0
+        peak_memory_mb = 0.0
+
+        for attempt_idx in range(ctx["max_retry"] + 1):
+
+            async def _analyze(photo_path=current_path):
+                return await agent.analyze_photo_quality_async(photo_path, http_client)
+
+            (metrics, ai_result, latency), resource_peaks = await collect_peak_resources_during_async(
+                _analyze
+            )
+            peak_cpu_usage_pct = max(peak_cpu_usage_pct, resource_peaks.get("peak_cpu_usage_pct", 0.0))
+            peak_memory_mb = max(peak_memory_mb, resource_peaks.get("peak_memory_mb", 0.0))
+            final_metrics = metrics
+            final_ai_result = ai_result
+            final_latency += latency
+
+            if not isinstance(metrics, dict):
+                attempt_history.append({
+                    "attempt": attempt_idx + 1,
+                    "image_path": current_path,
+                    "model_decision": ai_result.get("decision"),
+                    "error_code": ai_result.get("code"),
+                    "release": "NO_GO",
+                "loopback_signal": "other",
+                "action": "stop",
+                "rationale": "metrics unavailable; stop loopback",
+                    "latency_ms": latency,
+                })
+                loopback_stop_reason = "metrics_unavailable"
+                break
+
+            engine_metrics = {
+                "avg_brightness": metrics.get("avg_brightness", metrics.get("brightness", 0.0)),
+                "sharpness": metrics.get("sharpness", 0.0),
+            }
+            model_inference = {
+                "decision": ai_result.get("decision"),
+                "status": ai_result.get("decision"),
+                "confidence": ai_result.get("confidence"),
+            }
+            release_decision, _ = arbitrate_decision(
+                engine_metrics, model_inference, ctx["thresholds_cfg"]
+            )
+            loopback_signal = classify_loopback_signal(ai_result)
+            attempt_history.append({
+                "attempt": attempt_idx + 1,
+                "image_path": current_path,
+                "model_decision": ai_result.get("decision"),
+                "error_code": ai_result.get("code"),
+                "release": release_decision,
+                "loopback_signal": loopback_signal,
+                "action": "stop",
+                "rationale": "release resolved or awaiting planner decision",
+                "avg_brightness": round(float(engine_metrics.get("avg_brightness", 0.0)), 4),
+                "sharpness": round(float(engine_metrics.get("sharpness", 0.0)), 4),
+                "latency_ms": latency,
+            })
+
+            current_brightness = float(engine_metrics.get("avg_brightness", 0.0))
+            current_sharpness = float(engine_metrics.get("sharpness", 0.0))
+            if release_decision != "NO_GO":
+                loopback_stop_reason = "release_resolved"
+                break
+            if attempt_idx >= ctx["max_retry"]:
+                loopback_stop_reason = "max_retry_reached"
+                break
+
+            plan = ctx["loopback_planner"].plan(
+                signal=loopback_signal,
+                engine_metrics=engine_metrics,
+                thresholds_cfg=ctx["thresholds_cfg"],
+                loopback_guard_cfg=ctx.get("loopback_guard_cfg", {}),
+                attempt_history=attempt_history,
+            )
+            logger.info(
+                "Loopback planner (async) for %s attempt=%s signal=%s action=%s stop_reason=%s rationale=%s",
+                file_name,
+                attempt_idx + 1,
+                loopback_signal,
+                plan.action,
+                plan.stop_reason,
+                plan.rationale,
+            )
+            attempt_history[-1]["planner_fallback_used"] = bool(plan.fallback_used)
+            attempt_history[-1]["planner_backend"] = str(plan.planner_backend)
+            attempt_history[-1]["action"] = str(plan.action or "stop")
+            attempt_history[-1]["rationale"] = str(plan.rationale)
+            if not plan.action:
+                loopback_stop_reason = plan.stop_reason
+                break
+
+            if len(attempt_history) >= 2:
+                prev_attempt = attempt_history[-2]
+                prev_signal = prev_attempt.get("loopback_signal")
+                prev_brightness = float(prev_attempt.get("avg_brightness", 0.0))
+                prev_sharpness = float(prev_attempt.get("sharpness", 0.0))
+                brightness_gain = current_brightness - prev_brightness
+                if prev_signal in {"under", "over"} and prev_signal != loopback_signal:
+                    loopback_stop_reason = "oscillation_detected"
+                    break
+                if plan.action == "brighten" and brightness_gain < ctx["min_brightness_gain"]:
+                    loopback_stop_reason = f"insufficient_brightness_gain (<{ctx['min_brightness_gain']})"
+                    break
+                if plan.action == "dim" and (prev_brightness - current_brightness) < ctx["min_brightness_gain"]:
+                    loopback_stop_reason = f"insufficient_dimming_gain (<{ctx['min_brightness_gain']})"
+                    break
+                if plan.action == "sharpen" and (current_sharpness - prev_sharpness) < ctx["min_sharpness_gain"]:
+                    loopback_stop_reason = f"insufficient_sharpness_gain (<{ctx['min_sharpness_gain']})"
+                    break
+
+            if plan.action == "brighten":
+                current_path = await asyncio.to_thread(
+                    image_processor.adjust_brightness,
+                    current_path,
+                    ctx["brighten_factor"],
+                    file_stem,
+                    attempt_idx + 1,
+                )
+            elif plan.action == "dim":
+                current_path = await asyncio.to_thread(
+                    image_processor.adjust_brightness,
+                    current_path,
+                    ctx["dim_factor"],
+                    file_stem,
+                    attempt_idx + 1,
+                )
+            elif plan.action == "sharpen":
+                current_path = await asyncio.to_thread(
+                    image_processor.apply_sharpen,
+                    current_path,
+                    file_stem,
+                    attempt_idx + 1,
+                )
+            loopback_stop_reason = f"retry_scheduled ({plan.action})"
+
+        cpu_delta = max(0.0, time.process_time() - cpu_start)
+        wall_delta = max(final_latency / 1000.0, 1e-6)
+        process_cpu_usage_pct = round((cpu_delta / wall_delta) * 100, 4)
+        logger.info(
+            "Processed (async) %s: [%s] %s (%sms total)",
+            file_name,
+            (final_ai_result or {}).get("code", "?"),
+            (final_ai_result or {}).get("decision", "?"),
+            round(final_latency, 2),
+        )
+
+        image_wall_ms = (time.perf_counter() - image_wall_start) * 1000.0
+        model_latency_ms = float(round(final_latency, 2))
+        framework_wall_ms = max(0.0, image_wall_ms - model_latency_ms)
+
+        return {
+            "row": {
+                "file": file_name,
+                "metrics": final_metrics,
+                "decision": final_ai_result,
+                "inference_output": _build_agent_inference_output(
+                    image_path=path,
+                    attempt_history=attempt_history,
+                    final_ai_result=final_ai_result or {},
+                    total_latency_ms=round(final_latency, 2),
+                ),
+                "latency_ms": round(final_latency, 2),
+                "image_meta": image_meta,
+                "process_cpu_usage_pct": process_cpu_usage_pct,
+                "loopback": {
+                    "max_retry": ctx["max_retry"],
+                    "min_brightness_gain": ctx["min_brightness_gain"],
+                    "min_sharpness_gain": ctx["min_sharpness_gain"],
+                    "brighten_factor": ctx["brighten_factor"],
+                    "dim_factor": ctx["dim_factor"],
+                    "overexposure_stop_ratio": ctx["overexposure_stop_ratio"],
+                    "retry_count": max(0, len(attempt_history) - 1),
+                    "fallback_used_count": sum(
+                        1 for item in attempt_history if bool(item.get("planner_fallback_used"))
+                    ),
+                    "fallback_used": any(
+                        bool(item.get("planner_fallback_used")) for item in attempt_history
+                    ),
+                    "stop_reason": loopback_stop_reason,
+                    "attempts": attempt_history,
+                },
+                "status": "SUCCESS",
+            },
+            "perf_sample": {
+                "file": file_name,
+                "latency_ms": round(final_latency, 2),
+                "process_cpu_usage_pct": process_cpu_usage_pct,
+                "peak_cpu_usage_pct": round(peak_cpu_usage_pct, 4),
+                "peak_memory_mb": round(peak_memory_mb, 4),
+                "image_resolution": f"{image_meta.get('width', 0)}x{image_meta.get('height', 0)}",
+                **image_meta,
+            },
+            "overhead": {
+                "image_wall_ms": image_wall_ms,
+                "model_latency_ms": model_latency_ms,
+                "framework_wall_ms": framework_wall_ms,
+                "loopback_retry_count": max(0, len(attempt_history) - 1),
+            },
+        }
+
+
 def benchmark_monitor_overhead(samples=5, sleep_s=0.2):
     per_run_ms = []
     process = psutil.Process(os.getpid())
@@ -561,272 +1224,23 @@ def benchmark_monitor_overhead(samples=5, sleep_s=0.2):
     }
 
 
-def run_batch_test(
-    config_profile="dev",
-    config_path=None,
-    deterministic=False,
-    inference_backend_override=None,
-    performance_analysis=False,
-    overhead_analysis=False,
-    stress_test_count=None,
-):
-    config, config_source = load_config(profile=config_profile, config_path=config_path)
-    error_report_dir = config.get("folders", {}).get("logs", "logs/errors")
-    if inference_backend_override:
-        config.setdefault("model_settings", {}).setdefault("inference", {})
-        config["model_settings"]["inference"]["backend"] = inference_backend_override
-        config_source = f"{config_source} + CLI(backend={inference_backend_override})"
-    print(f"Loaded config source: {config_source}")
-    agent = QuantizedVisionAgent(config)
-    photos = agent.get_all_photos()
-    if stress_test_count:
-        input_folder = config["folders"]["input"]
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        base_dir = os.path.dirname(current_dir)
-        full_input_path = os.path.join(base_dir, input_folder)
-        ensure_stress_test_images(full_input_path, target_count=int(stress_test_count))
-        photos = agent.get_all_photos()
-    if deterministic:
-        random.seed(42)
-        agent.oom_probability = 0.0
-
-    if not photos:
-        print("No testable images were found.")
-        return None
-
-    batch_report = {
-        "schema_version": "2.0",
-        "profile": config_profile,
-        "batch_id": datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
-        "config_used": config["thresholds"],
-        "config_source": config_source,
-        "results": []
-    }
-    perf_samples = []
-    failure_memory_store = FailureMemoryStore()
-    image_processor = ImageProcessor()
-    max_retry = int(config.get("runtime", {}).get("max_retry", 3))
-    thresholds_cfg = config.get("thresholds", {})
-    loopback_guard_cfg = config.get("runtime", {}).get("loopback_guard", {})
-    min_brightness_gain = float(loopback_guard_cfg.get("min_brightness_gain", 4.0))
-    min_sharpness_gain = float(loopback_guard_cfg.get("min_sharpness_gain", 1.0))
-    brighten_factor = float(loopback_guard_cfg.get("brighten_factor", 1.2))
-    dim_factor = float(loopback_guard_cfg.get("dim_factor", 0.85))
-    overexposure_stop_ratio = float(loopback_guard_cfg.get("overexposure_stop_ratio", 0.95))
-    process = psutil.Process(os.getpid())
-    batch_wall_start = time.perf_counter()
-    batch_cpu_start = time.process_time()
-    batch_rss_start_mb = process.memory_info().rss / (1024.0 * 1024.0)
-    monitor_overhead_baseline = benchmark_monitor_overhead() if overhead_analysis else None
-    overhead_counters = {
-        "total_image_wall_ms": 0.0,
-        "total_model_latency_ms": 0.0,
-        "total_framework_wall_ms": 0.0,
-        "total_loopback_retry_count": 0,
-        "failure_memory_write_ms": 0.0,
-        "failure_memory_write_count": 0,
-    }
-
-    print(f"Starting to process {len(photos)} image(s)...\n")
-
-    for path in photos:
-        file_name = os.path.basename(path)
-        file_stem = Path(file_name).stem
-        try:
-            image_wall_start = time.perf_counter()
-            if random.random() < agent.oom_probability:
-                raise MemoryError("OOM Exception")
-
-            image_meta = get_image_metadata(path)
-            cpu_start = time.process_time()
-            attempt_history = []
-            current_path = path
-            final_metrics = None
-            final_ai_result = None
-            final_latency = 0.0
-            loopback_stop_reason = "not_triggered"
-
-            peak_cpu_usage_pct = 0.0
-            peak_memory_mb = 0.0
-
-            for attempt_idx in range(max_retry + 1):
-                (metrics, ai_result, latency), resource_peaks = collect_peak_resources_during(
-                    agent.analyze_photo_quality, current_path
-                )
-                peak_cpu_usage_pct = max(peak_cpu_usage_pct, resource_peaks.get("peak_cpu_usage_pct", 0.0))
-                peak_memory_mb = max(peak_memory_mb, resource_peaks.get("peak_memory_mb", 0.0))
-                final_metrics = metrics
-                final_ai_result = ai_result
-                final_latency += latency
-
-                if not isinstance(metrics, dict):
-                    attempt_history.append({
-                        "attempt": attempt_idx + 1,
-                        "image_path": current_path,
-                        "model_decision": ai_result.get("decision"),
-                        "error_code": ai_result.get("code"),
-                        "release": "NO_GO",
-                        "latency_ms": latency,
-                    })
-                    loopback_stop_reason = "metrics_unavailable"
-                    break
-
-                engine_metrics = {
-                    "avg_brightness": metrics.get("avg_brightness", metrics.get("brightness", 0.0)),
-                    "sharpness": metrics.get("sharpness", 0.0),
-                }
-                model_inference = {
-                    "decision": ai_result.get("decision"),
-                    "status": ai_result.get("decision"),
-                    "confidence": ai_result.get("confidence"),
-                }
-                release_decision, _ = arbitrate_decision(engine_metrics, model_inference, config.get("thresholds", {}))
-                loopback_signal = classify_loopback_signal(ai_result)
-                attempt_history.append({
-                    "attempt": attempt_idx + 1,
-                    "image_path": current_path,
-                    "model_decision": ai_result.get("decision"),
-                    "error_code": ai_result.get("code"),
-                    "release": release_decision,
-                    "loopback_signal": loopback_signal,
-                    "avg_brightness": round(float(engine_metrics.get("avg_brightness", 0.0)), 4),
-                    "sharpness": round(float(engine_metrics.get("sharpness", 0.0)), 4),
-                    "latency_ms": latency,
-                })
-
-                current_brightness = float(engine_metrics.get("avg_brightness", 0.0))
-                current_sharpness = float(engine_metrics.get("sharpness", 0.0))
-                if release_decision != "NO_GO":
-                    loopback_stop_reason = "release_resolved"
-                    break
-                if attempt_idx >= max_retry:
-                    loopback_stop_reason = "max_retry_reached"
-                    break
-
-                next_action, action_stop_reason = decide_loopback_action(
-                    loopback_signal, engine_metrics, thresholds_cfg, loopback_guard_cfg
-                )
-                if not next_action:
-                    loopback_stop_reason = action_stop_reason
-                    break
-
-                if len(attempt_history) >= 2:
-                    prev_attempt = attempt_history[-2]
-                    prev_signal = prev_attempt.get("loopback_signal")
-                    prev_brightness = float(prev_attempt.get("avg_brightness", 0.0))
-                    prev_sharpness = float(prev_attempt.get("sharpness", 0.0))
-                    brightness_gain = current_brightness - prev_brightness
-                    if prev_signal in {"under", "over"} and prev_signal != loopback_signal:
-                        loopback_stop_reason = "oscillation_detected"
-                        break
-                    if next_action == "brighten" and brightness_gain < min_brightness_gain:
-                        loopback_stop_reason = f"insufficient_brightness_gain (<{min_brightness_gain})"
-                        break
-                    if next_action == "dim" and (prev_brightness - current_brightness) < min_brightness_gain:
-                        loopback_stop_reason = f"insufficient_dimming_gain (<{min_brightness_gain})"
-                        break
-                    if next_action == "sharpen" and (current_sharpness - prev_sharpness) < min_sharpness_gain:
-                        loopback_stop_reason = f"insufficient_sharpness_gain (<{min_sharpness_gain})"
-                        break
-
-                if next_action == "brighten":
-                    current_path = image_processor.adjust_brightness(
-                        current_path,
-                        level=brighten_factor,
-                        file_stem=file_stem,
-                        attempt_idx=attempt_idx + 1,
-                    )
-                    print(
-                        f"Loopback retry {attempt_idx + 1}/{max_retry} for {file_name}: "
-                        f"detected under-exposed; brightness x{brighten_factor} and re-evaluate."
-                    )
-                elif next_action == "dim":
-                    current_path = image_processor.adjust_brightness(
-                        current_path,
-                        level=dim_factor,
-                        file_stem=file_stem,
-                        attempt_idx=attempt_idx + 1,
-                    )
-                    print(
-                        f"Loopback retry {attempt_idx + 1}/{max_retry} for {file_name}: "
-                        f"detected over-exposed; brightness x{dim_factor} and re-evaluate."
-                    )
-                elif next_action == "sharpen":
-                    current_path = image_processor.apply_sharpen(
-                        current_path,
-                        file_stem=file_stem,
-                        attempt_idx=attempt_idx + 1,
-                    )
-                    print(
-                        f"Loopback retry {attempt_idx + 1}/{max_retry} for {file_name}: "
-                        "detected blurry signal; apply sharpen and re-evaluate."
-                    )
-                loopback_stop_reason = f"retry_scheduled ({next_action})"
-
-            cpu_delta = max(0.0, time.process_time() - cpu_start)
-            wall_delta = max(final_latency / 1000.0, 1e-6)
-            process_cpu_usage_pct = round((cpu_delta / wall_delta) * 100, 4)
-            print(
-                f"Processed {file_name}: [{final_ai_result['code']}] {final_ai_result['decision']} "
-                f"({round(final_latency, 2)}ms total)"
-            )
-
-            batch_report["results"].append({
-                "file": file_name,
-                "metrics": final_metrics,
-                "decision": final_ai_result,
-                "latency_ms": round(final_latency, 2),
-                "image_meta": image_meta,
-                "process_cpu_usage_pct": process_cpu_usage_pct,
-                "loopback": {
-                    "max_retry": max_retry,
-                    "min_brightness_gain": min_brightness_gain,
-                    "min_sharpness_gain": min_sharpness_gain,
-                    "brighten_factor": brighten_factor,
-                    "dim_factor": dim_factor,
-                    "overexposure_stop_ratio": overexposure_stop_ratio,
-                    "retry_count": max(0, len(attempt_history) - 1),
-                    "stop_reason": loopback_stop_reason,
-                    "attempts": attempt_history,
-                },
-                "status": "SUCCESS"
-            })
-            perf_samples.append({
-                "file": file_name,
-                "latency_ms": round(final_latency, 2),
-                "process_cpu_usage_pct": process_cpu_usage_pct,
-                "peak_cpu_usage_pct": round(peak_cpu_usage_pct, 4),
-                "peak_memory_mb": round(peak_memory_mb, 4),
-                "image_resolution": f"{image_meta.get('width', 0)}x{image_meta.get('height', 0)}",
-                **image_meta,
-            })
-            image_wall_ms = (time.perf_counter() - image_wall_start) * 1000.0
-            model_latency_ms = float(round(final_latency, 2))
-            framework_wall_ms = max(0.0, image_wall_ms - model_latency_ms)
-            overhead_counters["total_image_wall_ms"] += image_wall_ms
-            overhead_counters["total_model_latency_ms"] += model_latency_ms
-            overhead_counters["total_framework_wall_ms"] += framework_wall_ms
-            overhead_counters["total_loopback_retry_count"] += max(0, len(attempt_history) - 1)
-
-        except Exception as e:
-            print(f"Failed to process file {file_name}: {e}")
-            error_payload = {
-                "generated_at": datetime.now().isoformat(),
-                "scope": "single_file",
-                "profile": config_profile,
-                "config_source": config_source,
-                "file": file_name,
-                "error_type": type(e).__name__,
-                "error_message": str(e),
-                "traceback": traceback.format_exc(),
-            }
-            save_error_report(error_payload, error_report_dir)
-            batch_report["results"].append({
-                "file": file_name,
-                "status": "FAILED",
-                "error": str(e)
-            })
-
+def _finalize_batch_report(
+    *,
+    batch_report: Dict[str, Any],
+    config: Dict[str, Any],
+    config_profile: str,
+    config_source: str,
+    perf_samples: List[Dict[str, Any]],
+    failure_memory_store: FailureMemoryStore,
+    overhead_counters: Dict[str, Any],
+    performance_analysis: bool,
+    overhead_analysis: bool,
+    batch_wall_start: float,
+    batch_cpu_start: float,
+    batch_rss_start_mb: float,
+    monitor_overhead_baseline: Optional[Dict[str, Any]],
+    process: psutil.Process,
+) -> Dict[str, Any]:
     total = len(batch_report["results"])
     success_count = sum(
         1 for row in batch_report["results"]
@@ -904,18 +1318,28 @@ def run_batch_test(
 
     top_ranking = rankings[:3]
 
-    print("\n" + "=" * 55)
-    print("Test Dashboard")
-    print(f"  - Total tests: {total}")
-    print(f"  - Pass rate (Optimal): {pass_rate:.1f}%")
-    print(f"  - Average latency: {avg_lat:.2f} ms")
-    print(f"  - Release decision (arbitrated): {decision}")
-    print(f"    (gate={gate_decision}, arbitration_batch={arbitration_batch})")
-    print("-" * 55)
-    print("Top ranking:")
+    logger.info("%s", "\n" + "=" * 55)
+    logger.info("Test Dashboard")
+    logger.info("  - Total tests: %s", total)
+    logger.info("  - Pass rate (Optimal): %.1f%%", pass_rate)
+    logger.info("  - Average latency: %.2f ms", avg_lat)
+    logger.info("  - Release decision (arbitrated): %s", decision)
+    logger.info(
+        "    (gate=%s, arbitration_batch=%s)",
+        gate_decision,
+        arbitration_batch,
+    )
+    logger.info("%s", "-" * 55)
+    logger.info("Top ranking:")
     for item in top_ranking:
-        print(f"  #{item['rank']} {item['file']} | score={item['score']} | {item['decision']}")
-    print("=" * 55)
+        logger.info(
+            "  #%s %s | score=%s | %s",
+            item["rank"],
+            item["file"],
+            item["score"],
+            item["decision"],
+        )
+    logger.info("%s", "=" * 55)
 
     batch_report["summary"] = {
         "total_tests": total,
@@ -989,17 +1413,423 @@ def run_batch_test(
         "summary": batch_report["summary"],
         "top_ranked": top_ranking,
         "ranking": rankings,
-        "image_files": sorted([row["file"] for row in batch_report["results"] if "file" in row])
+        "image_files": sorted([row["file"] for row in batch_report["results"] if "file" in row]),
     }
 
 
-def run_profile_comparison(profiles, inference_backend_override=None):
+def run_batch_test(
+    config_profile="dev",
+    config_path=None,
+    deterministic=False,
+    inference_backend_override=None,
+    loopback_planner_override=None,
+    planner_timeout_s_override=None,
+    planner_model_override=None,
+    planner_require_healthy_override=None,
+    performance_analysis=False,
+    overhead_analysis=False,
+    stress_test_count=None,
+    parallel_metrics=False,
+    metrics_workers=None,
+):
+    config, config_source = load_config(profile=config_profile, config_path=config_path)
+    error_report_dir = config.get("folders", {}).get("logs", "logs/errors")
+    config_source = _apply_runtime_overrides(
+        config,
+        config_source,
+        inference_backend_override=inference_backend_override,
+        loopback_planner_override=loopback_planner_override,
+        planner_timeout_s_override=planner_timeout_s_override,
+        planner_model_override=planner_model_override,
+        planner_require_healthy_override=planner_require_healthy_override,
+    )
+    logger.info("Loaded config source: %s", config_source)
+
+    pool_cm = (
+        MetricsProcessPool(max_workers=metrics_workers)
+        if parallel_metrics
+        else nullcontext()
+    )
+    with pool_cm as metrics_pool:
+        agent = QuantizedVisionAgent(
+            config,
+            metrics_pool=metrics_pool if parallel_metrics else None,
+        )
+        return _run_batch_test_body(
+            agent=agent,
+            config=config,
+            config_profile=config_profile,
+            config_source=config_source,
+            error_report_dir=error_report_dir,
+            deterministic=deterministic,
+            performance_analysis=performance_analysis,
+            overhead_analysis=overhead_analysis,
+            stress_test_count=stress_test_count,
+            parallel_metrics=parallel_metrics,
+            metrics_workers=metrics_pool.max_workers if parallel_metrics else None,
+        )
+
+
+def _run_batch_test_body(
+    *,
+    agent: QuantizedVisionAgent,
+    config: Dict[str, Any],
+    config_profile: str,
+    config_source: str,
+    error_report_dir: str,
+    deterministic: bool,
+    performance_analysis: bool,
+    overhead_analysis: bool,
+    stress_test_count: Optional[int],
+    parallel_metrics: bool,
+    metrics_workers: Optional[int],
+):
+    photos = agent.get_all_photos()
+    if stress_test_count:
+        input_folder = config["folders"]["input"]
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.dirname(current_dir)
+        full_input_path = os.path.join(base_dir, input_folder)
+        ensure_stress_test_images(full_input_path, target_count=int(stress_test_count))
+        photos = agent.get_all_photos()
+    if deterministic:
+        random.seed(42)
+        agent.oom_probability = 0.0
+
+    if not photos:
+        logger.warning("No testable images were found.")
+        return None
+
+    batch_report = {
+        "schema_version": "2.0",
+        "profile": config_profile,
+        "batch_id": datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
+        "config_used": config["thresholds"],
+        "config_source": config_source,
+        "results": [],
+    }
+    if parallel_metrics:
+        batch_report["parallel_metrics"] = True
+        batch_report["metrics_workers"] = metrics_workers
+
+    perf_samples = []
+    failure_memory_store = FailureMemoryStore()
+    photo_ctx = _build_photo_process_context(config, agent)
+    process = psutil.Process(os.getpid())
+    batch_wall_start = time.perf_counter()
+    batch_cpu_start = time.process_time()
+    batch_rss_start_mb = process.memory_info().rss / (1024.0 * 1024.0)
+    monitor_overhead_baseline = benchmark_monitor_overhead() if overhead_analysis else None
+    overhead_counters = {
+        "total_image_wall_ms": 0.0,
+        "total_model_latency_ms": 0.0,
+        "total_framework_wall_ms": 0.0,
+        "total_loopback_retry_count": 0,
+        "failure_memory_write_ms": 0.0,
+        "failure_memory_write_count": 0,
+    }
+
+    logger.info("Starting to process %s image(s)...", len(photos))
+
+    for path in photos:
+        file_name = os.path.basename(path)
+        try:
+            outcome = _process_single_photo(path, photo_ctx)
+            batch_report["results"].append(outcome["row"])
+            perf_samples.append(outcome["perf_sample"])
+            oh = outcome["overhead"]
+            overhead_counters["total_image_wall_ms"] += oh["image_wall_ms"]
+            overhead_counters["total_model_latency_ms"] += oh["model_latency_ms"]
+            overhead_counters["total_framework_wall_ms"] += oh["framework_wall_ms"]
+            overhead_counters["total_loopback_retry_count"] += oh["loopback_retry_count"]
+
+        except Exception as e:
+            logger.exception("Failed to process file %s", file_name)
+            error_payload = {
+                "generated_at": datetime.now().isoformat(),
+                "scope": "single_file",
+                "profile": config_profile,
+                "config_source": config_source,
+                "file": file_name,
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "traceback": traceback.format_exc(),
+            }
+            save_error_report(error_payload, error_report_dir)
+            batch_report["results"].append({
+                "file": file_name,
+                "status": "FAILED",
+                "error": str(e)
+            })
+
+    return _finalize_batch_report(
+        batch_report=batch_report,
+        config=config,
+        config_profile=config_profile,
+        config_source=config_source,
+        perf_samples=perf_samples,
+        failure_memory_store=failure_memory_store,
+        overhead_counters=overhead_counters,
+        performance_analysis=performance_analysis,
+        overhead_analysis=overhead_analysis,
+        batch_wall_start=batch_wall_start,
+        batch_cpu_start=batch_cpu_start,
+        batch_rss_start_mb=batch_rss_start_mb,
+        monitor_overhead_baseline=monitor_overhead_baseline,
+        process=process,
+    )
+
+
+@async_monitor_performance
+async def _run_async_batch_processing(
+    photos: List[str],
+    photo_ctx: Dict[str, Any],
+    batch_report: Dict[str, Any],
+    perf_samples: List[Dict[str, Any]],
+    overhead_counters: Dict[str, Any],
+    error_report_dir: str,
+    config_profile: str,
+    config_source: str,
+    concurrency: int,
+) -> None:
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+    logger.info(
+        "Async batch: processing %s image(s) with concurrency=%s",
+        len(photos),
+        max(1, concurrency),
+    )
+
+    async with httpx.AsyncClient() as http_client:
+
+        async def _handle_photo(path: str) -> Dict[str, Any]:
+            file_name = os.path.basename(path)
+            try:
+                return {
+                    "status": "SUCCESS",
+                    "file_name": file_name,
+                    "outcome": await _process_single_photo_async(
+                        path, photo_ctx, http_client, semaphore
+                    ),
+                }
+            except Exception as exc:
+                logger.exception("Failed to process file %s (async)", file_name)
+                error_payload = {
+                    "generated_at": datetime.now().isoformat(),
+                    "scope": "single_file",
+                    "profile": config_profile,
+                    "config_source": config_source,
+                    "file": file_name,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "traceback": traceback.format_exc(),
+                }
+                save_error_report(error_payload, error_report_dir)
+                return {
+                    "status": "FAILED",
+                    "file_name": file_name,
+                    "error": str(exc),
+                }
+
+        outcomes = await gather_with_timing(
+            [_handle_photo(path) for path in photos],
+            label="async_batch_photos",
+        )
+
+    for item in outcomes:
+        if item["status"] == "SUCCESS":
+            outcome = item["outcome"]
+            batch_report["results"].append(outcome["row"])
+            perf_samples.append(outcome["perf_sample"])
+            oh = outcome["overhead"]
+            overhead_counters["total_image_wall_ms"] += oh["image_wall_ms"]
+            overhead_counters["total_model_latency_ms"] += oh["model_latency_ms"]
+            overhead_counters["total_framework_wall_ms"] += oh["framework_wall_ms"]
+            overhead_counters["total_loopback_retry_count"] += oh["loopback_retry_count"]
+        else:
+            batch_report["results"].append({
+                "file": item["file_name"],
+                "status": "FAILED",
+                "error": item["error"],
+            })
+
+
+def run_batch_test_async(
+    config_profile="dev",
+    config_path=None,
+    deterministic=False,
+    inference_backend_override=None,
+    loopback_planner_override=None,
+    planner_timeout_s_override=None,
+    planner_model_override=None,
+    planner_require_healthy_override=None,
+    performance_analysis=False,
+    overhead_analysis=False,
+    stress_test_count=None,
+    concurrency=4,
+    parallel_metrics=False,
+    metrics_workers=None,
+):
+    """
+    Parallel batch run: concurrent per-image processing with async HTTP inference.
+
+    Use --parallel-metrics (ProcessPoolExecutor) when metrics CPU is the bottleneck;
+    async helps most when waiting on llama.cpp / Ollama HTTP responses.
+    """
+    config, config_source = load_config(profile=config_profile, config_path=config_path)
+    error_report_dir = config.get("folders", {}).get("logs", "logs/errors")
+    config_source = _apply_runtime_overrides(
+        config,
+        config_source,
+        inference_backend_override=inference_backend_override,
+        loopback_planner_override=loopback_planner_override,
+        planner_timeout_s_override=planner_timeout_s_override,
+        planner_model_override=planner_model_override,
+        planner_require_healthy_override=planner_require_healthy_override,
+    )
+    logger.info(
+        "Loaded config source: %s (async batch, concurrency=%s, parallel_metrics=%s)",
+        config_source,
+        concurrency,
+        parallel_metrics,
+    )
+
+    pool_cm = (
+        MetricsProcessPool(max_workers=metrics_workers)
+        if parallel_metrics
+        else nullcontext()
+    )
+    with pool_cm as metrics_pool:
+        agent = QuantizedVisionAgent(
+            config,
+            metrics_pool=metrics_pool if parallel_metrics else None,
+        )
+        return _run_batch_test_async_body(
+            agent=agent,
+            config=config,
+            config_profile=config_profile,
+            config_source=config_source,
+            error_report_dir=error_report_dir,
+            deterministic=deterministic,
+            performance_analysis=performance_analysis,
+            overhead_analysis=overhead_analysis,
+            stress_test_count=stress_test_count,
+            concurrency=concurrency,
+            parallel_metrics=parallel_metrics,
+            metrics_workers=metrics_pool.max_workers if parallel_metrics else None,
+        )
+
+
+def _run_batch_test_async_body(
+    *,
+    agent: QuantizedVisionAgent,
+    config: Dict[str, Any],
+    config_profile: str,
+    config_source: str,
+    error_report_dir: str,
+    deterministic: bool,
+    performance_analysis: bool,
+    overhead_analysis: bool,
+    stress_test_count: Optional[int],
+    concurrency: int,
+    parallel_metrics: bool,
+    metrics_workers: Optional[int],
+):
+    photos = agent.get_all_photos()
+    if stress_test_count:
+        input_folder = config["folders"]["input"]
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.dirname(current_dir)
+        full_input_path = os.path.join(base_dir, input_folder)
+        ensure_stress_test_images(full_input_path, target_count=int(stress_test_count))
+        photos = agent.get_all_photos()
+    if deterministic:
+        random.seed(42)
+        agent.oom_probability = 0.0
+
+    if not photos:
+        logger.warning("No testable images were found.")
+        return None
+
+    batch_report = {
+        "schema_version": "2.0",
+        "profile": config_profile,
+        "batch_id": datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
+        "config_used": config["thresholds"],
+        "config_source": config_source,
+        "execution_mode": "async",
+        "async_concurrency": max(1, int(concurrency)),
+        "results": [],
+    }
+    if parallel_metrics:
+        batch_report["parallel_metrics"] = True
+        batch_report["metrics_workers"] = metrics_workers
+    perf_samples: List[Dict[str, Any]] = []
+    failure_memory_store = FailureMemoryStore()
+    photo_ctx = _build_photo_process_context(config, agent)
+    process = psutil.Process(os.getpid())
+    batch_wall_start = time.perf_counter()
+    batch_cpu_start = time.process_time()
+    batch_rss_start_mb = process.memory_info().rss / (1024.0 * 1024.0)
+    monitor_overhead_baseline = benchmark_monitor_overhead() if overhead_analysis else None
+    overhead_counters = {
+        "total_image_wall_ms": 0.0,
+        "total_model_latency_ms": 0.0,
+        "total_framework_wall_ms": 0.0,
+        "total_loopback_retry_count": 0,
+        "failure_memory_write_ms": 0.0,
+        "failure_memory_write_count": 0,
+    }
+
+    asyncio.run(
+        _run_async_batch_processing(
+            photos,
+            photo_ctx,
+            batch_report,
+            perf_samples,
+            overhead_counters,
+            error_report_dir,
+            config_profile,
+            config_source,
+            concurrency=max(1, int(concurrency)),
+        )
+    )
+
+    return _finalize_batch_report(
+        batch_report=batch_report,
+        config=config,
+        config_profile=config_profile,
+        config_source=config_source,
+        perf_samples=perf_samples,
+        failure_memory_store=failure_memory_store,
+        overhead_counters=overhead_counters,
+        performance_analysis=performance_analysis,
+        overhead_analysis=overhead_analysis,
+        batch_wall_start=batch_wall_start,
+        batch_cpu_start=batch_cpu_start,
+        batch_rss_start_mb=batch_rss_start_mb,
+        monitor_overhead_baseline=monitor_overhead_baseline,
+        process=process,
+    )
+
+
+def run_profile_comparison(
+    profiles,
+    inference_backend_override=None,
+    loopback_planner_override=None,
+    planner_timeout_s_override=None,
+    planner_model_override=None,
+    planner_require_healthy_override=None,
+):
     profile_outputs = []
     for profile in profiles:
-        print(f"\nRunning profile: {profile}")
+        logger.info("Running profile: %s", profile)
         result = run_batch_test(
             config_profile=profile,
             inference_backend_override=inference_backend_override,
+            loopback_planner_override=loopback_planner_override,
+            planner_timeout_s_override=planner_timeout_s_override,
+            planner_model_override=planner_model_override,
+            planner_require_healthy_override=planner_require_healthy_override,
             overhead_analysis=False,
         )
         if result:
@@ -1010,20 +1840,24 @@ def run_profile_comparison(profiles, inference_backend_override=None):
         key=lambda item: (-item["summary"]["pass_rate"], item["summary"]["avg_latency_ms"])
     )
 
-    print("\nProfile ranking (best to worst):")
+    logger.info("%s", "\nProfile ranking (best to worst):")
     for idx, item in enumerate(ordered, start=1):
         summary = item["summary"]
-        print(
-            f"  #{idx} {item['profile']} | pass={summary['pass_rate']}% | "
-            f"latency={summary['avg_latency_ms']}ms | decision={summary['release_decision']}"
+        logger.info(
+            "  #%s %s | pass=%s%% | latency=%sms | decision=%s",
+            idx,
+            item["profile"],
+            summary["pass_rate"],
+            summary["avg_latency_ms"],
+            summary["release_decision"],
         )
 
     benchmark_insights = generate_benchmark_insights(profile_outputs, ordered)
-    print("\nBenchmark Insights:")
+    logger.info("%s", "\nBenchmark Insights:")
     for idx, insight in enumerate(benchmark_insights, start=1):
-        print(f"  [{idx}] Trade-off: {insight['trade_off']}")
-        print(f"      Observation: {insight['observation']}")
-        print(f"      Decision implication: {insight['decision_implication']}")
+        logger.info("  [%s] Trade-off: %s", idx, insight["trade_off"])
+        logger.info("      Observation: %s", insight["observation"])
+        logger.info("      Decision implication: %s", insight["decision_implication"])
 
     comparison_report = {
         "generated_at": datetime.now().isoformat(),
@@ -1035,15 +1869,31 @@ def run_profile_comparison(profiles, inference_backend_override=None):
     return comparison_report
 
 
-def run_repeatability_test(profile, runs=5, inference_backend_override=None):
-    print(f"\nRunning repeatability test: profile={profile}, runs={runs}")
+def run_repeatability_test(
+    profile,
+    runs=5,
+    inference_backend_override=None,
+    loopback_planner_override=None,
+    planner_timeout_s_override=None,
+    planner_model_override=None,
+    planner_require_healthy_override=None,
+):
+    logger.info(
+        "Running repeatability test: profile=%s, runs=%s",
+        profile,
+        runs,
+    )
     run_outputs = []
     for run_idx in range(1, runs + 1):
-        print(f"\nRepeatability run {run_idx}/{runs}")
+        logger.info("Repeatability run %s/%s", run_idx, runs)
         run_result = run_batch_test(
             config_profile=profile,
             deterministic=True,
             inference_backend_override=inference_backend_override,
+            loopback_planner_override=loopback_planner_override,
+            planner_timeout_s_override=planner_timeout_s_override,
+            planner_model_override=planner_model_override,
+            planner_require_healthy_override=planner_require_healthy_override,
             overhead_analysis=False,
         )
         if run_result:
@@ -1051,7 +1901,7 @@ def run_repeatability_test(profile, runs=5, inference_backend_override=None):
             run_outputs.append(run_result)
 
     if not run_outputs:
-        print("Repeatability test failed: no run output produced.")
+        logger.error("Repeatability test failed: no run output produced.")
         return None
 
     pass_rates = [r["summary"]["pass_rate"] for r in run_outputs]
@@ -1092,16 +1942,20 @@ def run_repeatability_test(profile, runs=5, inference_backend_override=None):
     }
     save_repeatability_report(repeatability_report, "results")
 
-    print("\nRepeatability summary:")
-    print(f"  - Same image set across runs: {image_set_consistent}")
-    print(f"  - Pass-rate variance: {variance_report['pass_rate_variance']}")
-    print(f"  - Avg-latency variance: {variance_report['avg_latency_variance']}")
-    print(f"  - Max per-image score variance: {variance_report['max_image_score_variance']}")
-    print(f"  - Decision distribution: {decision_distribution}")
+    logger.info("%s", "\nRepeatability summary:")
+    logger.info("  - Same image set across runs: %s", image_set_consistent)
+    logger.info("  - Pass-rate variance: %s", variance_report["pass_rate_variance"])
+    logger.info("  - Avg-latency variance: %s", variance_report["avg_latency_variance"])
+    logger.info(
+        "  - Max per-image score variance: %s",
+        variance_report["max_image_score_variance"],
+    )
+    logger.info("  - Decision distribution: %s", decision_distribution)
     return repeatability_report
 
 
 if __name__ == "__main__":
+    configure_cli_logging()
     parser = argparse.ArgumentParser(description="Quantized Vision QA batch tester")
     parser.add_argument(
         "--profile",
@@ -1139,6 +1993,28 @@ if __name__ == "__main__":
         help="Temporarily override inference backend without editing config"
     )
     parser.add_argument(
+        "--loopback-planner",
+        default=None,
+        choices=["simulated", "llm"],
+        help="Temporarily override loopback planner mode without editing config",
+    )
+    parser.add_argument(
+        "--planner-timeout-s",
+        type=float,
+        default=None,
+        help="Override runtime.loopback_planner.llm.timeout_s from CLI",
+    )
+    parser.add_argument(
+        "--planner-model",
+        default=None,
+        help="Override runtime.loopback_planner.llm.model from CLI",
+    )
+    parser.add_argument(
+        "--planner-skip-health-check",
+        action="store_true",
+        help="Skip startup health check for loopback planner in llm mode",
+    )
+    parser.add_argument(
         "--performance-analysis",
         action="store_true",
         help="Generate optional performance deep-dive report (latency vs image size and CPU)"
@@ -1153,28 +2029,77 @@ if __name__ == "__main__":
         action="store_true",
         help="Generate overhead report for framework cost (monitoring, loopback, memory writes)"
     )
+    parser.add_argument(
+        "--async-batch",
+        action="store_true",
+        help="Run batch with asyncio parallel per-image processing (httpx for HTTP backends)",
+    )
+    parser.add_argument(
+        "--async-concurrency",
+        type=int,
+        default=4,
+        help="Max concurrent images when --async-batch is set (default: 4)",
+    )
+    parser.add_argument(
+        "--parallel-metrics",
+        action="store_true",
+        help="Compute sharpness/brightness metrics in a ProcessPoolExecutor (CPU-bound speedup)",
+    )
+    parser.add_argument(
+        "--metrics-workers",
+        type=int,
+        default=None,
+        help="Process pool size for --parallel-metrics (default: min(cpu_count, 8))",
+    )
     args = parser.parse_args()
     try:
         if args.repeatability_test:
             run_repeatability_test(
                 args.repeatability_test,
                 runs=max(1, args.repeatability_runs),
-                inference_backend_override=args.inference_backend
+                inference_backend_override=args.inference_backend,
+                loopback_planner_override=args.loopback_planner,
+                planner_timeout_s_override=args.planner_timeout_s,
+                planner_model_override=args.planner_model,
+                planner_require_healthy_override=(
+                    False if args.planner_skip_health_check else None
+                ),
             )
         elif args.compare_profiles:
             run_profile_comparison(
                 args.compare_profiles,
-                inference_backend_override=args.inference_backend
+                inference_backend_override=args.inference_backend,
+                loopback_planner_override=args.loopback_planner,
+                planner_timeout_s_override=args.planner_timeout_s,
+                planner_model_override=args.planner_model,
+                planner_require_healthy_override=(
+                    False if args.planner_skip_health_check else None
+                ),
             )
         else:
-            run_batch_test(
+            batch_kwargs = dict(
                 config_profile=args.profile,
                 config_path=args.config,
                 inference_backend_override=args.inference_backend,
+                loopback_planner_override=args.loopback_planner,
+                planner_timeout_s_override=args.planner_timeout_s,
+                planner_model_override=args.planner_model,
+                planner_require_healthy_override=(
+                    False if args.planner_skip_health_check else None
+                ),
                 performance_analysis=args.performance_analysis,
                 overhead_analysis=args.overhead_analysis,
                 stress_test_count=100 if args.stress_test_100 else None,
+                parallel_metrics=args.parallel_metrics,
+                metrics_workers=args.metrics_workers,
             )
+            if args.async_batch:
+                run_batch_test_async(
+                    **batch_kwargs,
+                    concurrency=max(1, args.async_concurrency),
+                )
+            else:
+                run_batch_test(**batch_kwargs)
     except Exception as e:
         try:
             fallback_profile = args.profile if hasattr(args, "profile") else "dev"

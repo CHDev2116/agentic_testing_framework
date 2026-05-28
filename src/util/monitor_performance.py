@@ -1,8 +1,9 @@
 """
-Performance monitoring helpers for PixelQA agent/util layers.
+Performance monitoring helpers for the Agentic Testing Framework (agent/util layers).
 
 Provides sync/async decorators that log wall time; optional peak traced allocation
-via ``tracemalloc`` when ``PIXELQA_MONITOR_MEMORY`` is enabled (profile/debug).
+via ``tracemalloc`` when ``ATF_MONITOR_MEMORY`` is enabled (profile/debug).
+Legacy: ``PIXELQA_MONITOR_MEMORY`` is accepted as an alias.
 
 Also provides a simple wall-time context manager for inline sections.
 """
@@ -22,20 +23,21 @@ logger = logging.getLogger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
 
-_ENV_MEMORY_FLAG = "PIXELQA_MONITOR_MEMORY"
-
 
 def _memory_tracing_enabled() -> bool:
     """Enable tracemalloc peak/current MB in decorator logs (extra overhead)."""
-    v = os.environ.get(_ENV_MEMORY_FLAG, "").strip().lower()
-    return v in ("1", "true", "yes", "on")
+    for key in ("ATF_MONITOR_MEMORY", "PIXELQA_MONITOR_MEMORY"):
+        v = os.environ.get(key, "").strip().lower()
+        if v in ("1", "true", "yes", "on"):
+            return True
+    return False
 
 
 def monitor_performance(func: F) -> F:
     """
     Decorator for synchronous callables: records elapsed time; optional peak memory (tracemalloc).
 
-    Memory tracing is controlled by env ``PIXELQA_MONITOR_MEMORY`` (default: off) to avoid
+    Memory tracing is controlled by env ``ATF_MONITOR_MEMORY`` (default: off) to avoid
     overhead on very hot call paths.
 
     Logs entry at DEBUG and completion at INFO so expensive paths stay observable without

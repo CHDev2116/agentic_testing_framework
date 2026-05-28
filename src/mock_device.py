@@ -1,5 +1,11 @@
+import logging
+import random
 import time
-import random # Used to simulate AI quality scores.
+
+from util.cli_logging import configure_cli_logging
+
+logger = logging.getLogger(__name__)
+
 
 # 1. Simulated AI model class.
 class MiniVisionModel:
@@ -8,42 +14,42 @@ class MiniVisionModel:
         # For now, simulate an AI quality score with random values.
         return round(random.uniform(0.3, 1.0), 2)
 
+
 # 2. Updated verification function.
 def verify_capture_success(device_controller, vision_model, previous_latest_file):
     timeout = 5
     start_time = time.time()
-    
-    print("🔍 Start monitoring for a new photo...")
-    
+
+    logger.info("Start monitoring for a new photo...")
+
     try:
         while time.time() - start_time < timeout:
             current_file = device_controller.get_latest_photo_path()
-            
+
             if current_file != previous_latest_file:
-                print(f"✅ New file detected: {current_file}")
-                
+                logger.info("New file detected: %s", current_file)
+
                 # --- Add AI quality analysis logic ---
                 score = vision_model.analyze(current_file)
-                
+
                 if score > 0.8:
-                    print(f"✨ Excellent quality (Score: {score})")
+                    logger.info("Excellent quality (Score: %s)", score)
                     return True
-                elif score < 0.5:
-                    print(f"⚠️ Quality issue detected: image is too blurry (Score: {score})")
+                if score < 0.5:
+                    logger.warning("Quality issue detected: image is too blurry (Score: %s)", score)
                     return False
-                else:
-                    print(f"🤔 Quality is borderline; manual review recommended (Score: {score})")
-                    return True 
-                # --------------------------
-            
+                logger.info("Quality is borderline; manual review recommended (Score: %s)", score)
+                return True
+
             time.sleep(0.5)
-            
-        print("⏳ Monitoring timed out: no new photo found.")
+
+        logger.warning("Monitoring timed out: no new photo found.")
         return False
 
-    except Exception as e:
-        print(f"❌ Exception occurred during test: {e}")
+    except Exception:
+        logger.exception("Exception occurred during capture verification")
         return False
+
 
 # 3. Simulated mobile environment.
 class MockDevice:
@@ -53,23 +59,21 @@ class MockDevice:
 
     def get_latest_photo_path(self):
         if self.mode == "crash":
-            raise Exception("OOM: Out of Memory (mobile memory full)")
+            raise RuntimeError("OOM: Out of Memory (mobile memory full)")
         if self.has_new_file:
             return "/sdcard/DCIM/IMG_NEW.jpg"
         return "/sdcard/DCIM/IMG_OLD.jpg"
 
-# --- Run tests ---
 
-# Initialize AI model.
-my_ai_model = MiniVisionModel()
+if __name__ == "__main__":
+    configure_cli_logging()
+    my_ai_model = MiniVisionModel()
 
-# Scenario 1: capture succeeds and AI checks quality.
-success_phone = MockDevice(mode="normal")
-success_phone.has_new_file = True
-print("\n--- Test: AI quality analysis path ---")
-verify_capture_success(success_phone, my_ai_model, "/sdcard/DCIM/IMG_OLD.jpg")
+    success_phone = MockDevice(mode="normal")
+    success_phone.has_new_file = True
+    logger.info("\n--- Test: AI quality analysis path ---")
+    verify_capture_success(success_phone, my_ai_model, "/sdcard/DCIM/IMG_OLD.jpg")
 
-# Scenario 2: mobile crash path.
-crash_phone = MockDevice(mode="crash")
-print("\n--- Test: mobile crash path ---")
-verify_capture_success(crash_phone, my_ai_model, "/sdcard/DCIM/IMG_OLD.jpg")
+    crash_phone = MockDevice(mode="crash")
+    logger.info("\n--- Test: mobile crash path ---")
+    verify_capture_success(crash_phone, my_ai_model, "/sdcard/DCIM/IMG_OLD.jpg")

@@ -1,6 +1,6 @@
-# Architecture: Inference Provider Abstraction (PixelQA-Llama)
+# Architecture: Inference Provider Abstraction (Agentic Testing Framework)
 
-This document explains the **Provider abstraction layer** used by PixelQA-Llama: how inference backends are selected, what contract they must satisfy, and how failures are normalized into a stable surface for evaluation and loopback.
+This document explains the **Provider abstraction layer** used by this project: how inference backends are selected, what contract they must satisfy, and how failures are normalized into a stable surface for evaluation and loopback.
 
 In this codebase, **“Provider” = an inference backend implementation** behind a single orchestrator-facing API.
 
@@ -17,7 +17,7 @@ In this codebase, **“Provider” = an inference backend implementation** behin
 
 - Entry: `src/ai_quality_agent.py` (CLI) → `QuantizedVisionAgent` → engine metrics (`vision_math`) → `build_inference_engine` → evaluation / arbitration → reports, plus optional **guardrail-driven loopback** on `NO_GO`.
 
-This is the **main production-oriented path** for PixelQA-style runs.
+This is the **main production-oriented path** for batch CLI runs (`ai_quality_agent.py`).
 
 **Secondary / demo — staged agent orchestrator**
 
@@ -162,10 +162,10 @@ Decorators (`monitor_performance`, `async_monitor_performance`) **always log wal
 Enable traced memory in logs when profiling:
 
 ```bash
-export PIXELQA_MONITOR_MEMORY=1
+export ATF_MONITOR_MEMORY=1
 ```
 
-Accepted truthy values: `1`, `true`, `yes` (case-insensitive). When unset or false, completion logs include elapsed time only.
+Accepted truthy values: `1`, `true`, `yes`, `on` (case-insensitive). Legacy alias `PIXELQA_MONITOR_MEMORY` is still honored. When unset or false, completion logs include elapsed time only.
 
 ## Adding a new Provider (checklist)
 

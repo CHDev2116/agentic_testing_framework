@@ -24,21 +24,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-cov ruff
+          pip install -e ".[dev]"
 
       - name: Lint
+        run: ruff check src tests app.py test_connection.py
+
+      - name: Type check (mypy)
         run: |
-          ruff check \
-            src/ai_quality_agent.py \
-            src/eval \
-            src/models/inference_adapter.py \
-            src/util/failure_memory.py \
-            src/util/monitor_performance.py \
-            src/agent/orchestrator.py \
-            src/engine/image_processor.py \
-            src/test_failure_memory_retrieval.py \
-            tests
+          mypy --explicit-package-bases src
+          MYPYPATH=src mypy --explicit-package-bases app.py test_connection.py
 
       - name: Unit tests with coverage
         run: |

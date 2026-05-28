@@ -6,7 +6,7 @@
         "author": "Cheryl"
     },
     "model_settings": {
-        "name": "PixelQA-Llama-4bit",
+        "name": "Agentic Testing Framework - Llama 4-bit",
         "bit_depth": 4,
         "quantization_format": "GGUF",
         "inference": {
@@ -45,7 +45,19 @@
         "logs": "logs/base"
     },
     "runtime": {
-        "oom_probability": 0.0
+        "oom_probability": 0.0,
+        "loopback_planner": {
+            "mode": "simulated",
+            "require_healthy_on_startup": true,
+            "llm": {
+                "host": "http://127.0.0.1:8080",
+                "endpoint": "/v1/chat/completions",
+                "model": "local-model",
+                "timeout_s": 20,
+                "temperature": 0.0,
+                "max_tokens": 200
+            }
+        }
     },
     "quality_gate": {
         "target_pass_rate": 85.0
