@@ -1,4 +1,8 @@
-from ai_quality_agent import classify_loopback_signal, decide_loopback_action
+from ai_quality_agent import (
+    classify_loopback_signal,
+    decide_loopback_action,
+    plan_next_action,
+)
 
 
 def test_classify_loopback_signal_blurry():
@@ -39,3 +43,15 @@ def test_decide_loopback_action_for_blurry():
     )
     assert action == "sharpen"
     assert reason == "retry_scheduled"
+
+
+def test_plan_next_action_reports_rationale():
+    plan = plan_next_action(
+        signal="under",
+        engine_metrics={"avg_brightness": 10.0, "sharpness": 30.0},
+        thresholds_cfg={"min_brightness": 40.0, "max_brightness": 220.0, "min_sharpness": 20.0},
+        loopback_guard_cfg={"overexposure_stop_ratio": 0.95},
+    )
+    assert plan.action == "brighten"
+    assert plan.stop_reason == "retry_scheduled"
+    assert "under-exposed" in plan.rationale

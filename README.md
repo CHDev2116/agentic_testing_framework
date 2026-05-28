@@ -34,20 +34,54 @@ This repo optimizes for **integrators**: swap runtimes without rewriting the bat
 
 Same codebase path runs locally (simulated / Ollama / llama.cpp HTTP) or against a mock HTTP API—**no forked “deploy-only” branch** unless your infra truly requires it.
 
-### Orchestrator contract: one method shape, normalized outputs
+### Orchestrator contract: one method shape, typed-normalized outputs
 
 Engines are **not** tied to a shared ABC in this codebase. Each backend class implements the same surface:
 
 `predict_quality(photo_path: str, metrics: dict) -> dict`
 
-Return dicts are passed through `_normalize_result(...)` so downstream code sees a **stable schema**: at minimum `decision`, `code`, `msg`, plus optional `confidence`, and `backend` (including `provider->simulated` when fallback fires).
+Raw backend responses are validated through `InferenceOutput` (`src/models/contracts.py`) and normalized before use, so downstream code sees a **stable schema**: at minimum `decision`, `code`, `msg`, plus optional `confidence`, and `backend` (including `provider->simulated` when fallback fires).
 
-**Adding a new backend** today means: implement that method + normalize through `_normalize_result`, then add a branch in `build_inference_engine`. If you want static enforcement later, a `typing.Protocol` (or an ABC) is an incremental hardening step—the factory stays the single registry for CI/review friendliness.
+**Adding a new backend** today means: implement that method + normalize through `InferenceOutput.from_payload(...)`, then add a branch in `build_inference_engine`. If you want static enforcement later, a `typing.Protocol` (or an ABC) is an incremental hardening step—the factory stays the single registry for CI/review friendliness.
 
 ### Actionable batch artifacts
 
 - Per-inference payloads retain **`code`** (machine-oriented) and **`msg`** (human-oriented) after normalization—failures are classified, not opaque.
 - Batch summaries include **`summary.decision_reason`**: a single string that records how **quality-gate** and **aggregated arbitration** were merged (`merge_gate_and_arbitration`), so **why** the merged outcome is `GO` / `REVIEW` / `NO_GO` is reproducible from the JSON without re-running the batch.
+- Per-image rows now include **`inference_output`** (typed trace) with step-level planner history (`steps`) and fallback visibility (`fallback_used`).
+
+Example (trimmed):
+
+```json
+{
+  "file": "image4.jpeg",
+  "decision": {
+    "decision": "Under-exposed",
+    "code": "ERR_LIGHT_DARK_002",
+    "msg": "too dark",
+    "backend": "llama_cpp"
+  },
+  "inference_output": {
+    "image_path": "test_images/image4.jpeg",
+    "final_decision": "NO_GO",
+    "error_code": "ERR_LIGHT_DARK_002",
+    "error_message": "too dark",
+    "total_latency_ms": 9.91,
+    "steps": [
+      {
+        "attempt": 1,
+        "signal": "under",
+        "action": "brighten",
+        "rationale": "under-exposed signal and safe brightness headroom",
+        "fallback_used": true,
+        "metrics_before": {"avg_brightness": 9.8, "sharpness": 14.2},
+        "metrics_after": {"avg_brightness": 12.1, "sharpness": 13.9},
+        "latency_ms": 4.7
+      }
+    ]
+  }
+}
+```
 
 See also: [`docs/Architecture.md`](docs/Architecture.md) for the provider contract and fallback behavior.
 
@@ -101,7 +135,9 @@ Optional: add a short screen recording as `assets/demo.gif` and reference it her
 
 - **Architecture**: `Engine -> Model -> Eval` with clear boundaries.
 - **Decision policy**: conservative release gating (`GO` / `REVIEW` / `NO_GO`).
-- **Loopback**: `NO_GO` recovery includes brighten/dim/sharpen strategies under retry limits.
+- **Loopback**: `NO_GO` recovery runs a planner step (`plan_next_action`) to choose brighten/dim/sharpen/stop under retry limits.
+- **Planner mode**: `runtime.loopback_planner.mode` supports `simulated` (default) and `llm` (with automatic fallback to simulated on planner errors).
+- **Planner health check**: when planner mode is `llm`, startup runs endpoint health check by default (`require_healthy_on_startup=true`) and fails fast if unreachable. Use `--planner-skip-health-check` only for controlled fallback experiments.
 - **Retention**: auto-clean for `batch_report_*.json` and `error_report_*.json` after 14 days.
 - **CI scope**: Ruff on `src` + `tests` + `app.py` + `test_connection.py`; **mypy** on `src` then on `app.py` / `test_connection.py` with `MYPYPATH=src`; pytest with coverage (including **`--cov-fail-under=34`**). Tests emphasize the **release decision path** (arbitration, inference result normalization, loopback integration) and **golden checks** for batch ranking, release gates, log stability windows, Pillow-based vision metrics, and OpenCV exposure validation—see `tests/`.
 
@@ -138,11 +174,15 @@ python3 src/ai_quality_agent.py --config configs/dev.json
 python3 src/ai_quality_agent.py --compare-profiles dev benchmark
 python3 src/ai_quality_agent.py --repeatability-test dev --repeatability-runs 5
 python3 src/ai_quality_agent.py --profile benchmark --inference-backend mock_api
+python3 src/ai_quality_agent.py --profile dev --loopback-planner llm
+python3 src/ai_quality_agent.py --profile dev --loopback-planner llm --planner-timeout-s 10 --planner-model local-planner
+python3 src/ai_quality_agent.py --profile dev --loopback-planner llm --planner-skip-health-check
 python3 src/ai_quality_agent.py --profile dev --performance-analysis
 python3 src/ai_quality_agent.py --profile dev --stress-test-100 --performance-analysis
 python3 src/ai_quality_agent.py --profile dev --overhead-analysis
 python3 src/ai_quality_agent.py --profile dev --parallel-metrics
 python3 src/ai_quality_agent.py --profile dev --async-batch --async-concurrency 4
+python3 src/ai_quality_agent.py --profile dev --async-batch --loopback-planner llm
 python3 src/ai_quality_agent.py --profile dev --async-batch --parallel-metrics
 python3 src/test_failure_memory_retrieval.py
 ```

@@ -18,8 +18,8 @@ from models.inference_adapter import (
     MockAPIInferenceEngine,
     OllamaVisionInferenceEngine,
     SimulatedInferenceEngine,
-    _normalize_result,
 )
+from models.contracts import InferenceOutput
 
 logger = logging.getLogger(__name__)
 
@@ -87,9 +87,11 @@ async def _llama_cpp_predict_async(
         body = response.json()
         model_text = str(body.get("choices", [{}])[0].get("message", {}).get("content", ""))
         parsed = engine._extract_json_object(model_text)
-        normalized = _normalize_result(parsed, "llama.cpp returned unparsable response.")
-        normalized["backend"] = engine.backend_name
-        return normalized
+        return InferenceOutput.from_payload(
+            parsed,
+            default_msg="llama.cpp returned unparsable response.",
+            backend=engine.backend_name,
+        ).to_dict()
     except Exception as exc:
         logger.warning(
             "predict_quality_async(llama_cpp): request failed url=%s error=%s",
@@ -103,12 +105,12 @@ async def _llama_cpp_predict_async(
             fallback["msg"] = f"llama.cpp fallback to simulated inference: {exc}"
             fallback["backend"] = f"{engine.backend_name}->simulated"
             return fallback
-        return {
-            "decision": "Error",
-            "code": "ERR_MODEL_BACKEND_503",
-            "msg": f"llama.cpp inference failed: {exc}",
-            "backend": engine.backend_name,
-        }
+        return InferenceOutput(
+            decision="Error",
+            code="ERR_MODEL_BACKEND_503",
+            msg=f"llama.cpp inference failed: {exc}",
+            backend=engine.backend_name,
+        ).to_dict()
 
 
 async def _ollama_predict_async(
@@ -142,9 +144,11 @@ async def _ollama_predict_async(
         body = response.json()
         model_text = str(body.get("response", ""))
         parsed = engine._extract_json_object(model_text)
-        normalized = _normalize_result(parsed, "Ollama returned unparsable response.")
-        normalized["backend"] = engine.backend_name
-        return normalized
+        return InferenceOutput.from_payload(
+            parsed,
+            default_msg="Ollama returned unparsable response.",
+            backend=engine.backend_name,
+        ).to_dict()
     except Exception as exc:
         logger.warning(
             "predict_quality_async(ollama): request failed url=%s error=%s",
@@ -158,12 +162,12 @@ async def _ollama_predict_async(
             fallback["msg"] = f"Ollama fallback to simulated inference: {exc}"
             fallback["backend"] = f"{engine.backend_name}->simulated"
             return fallback
-        return {
-            "decision": "Error",
-            "code": "ERR_MODEL_BACKEND_503",
-            "msg": f"Ollama inference failed: {exc}",
-            "backend": engine.backend_name,
-        }
+        return InferenceOutput(
+            decision="Error",
+            code="ERR_MODEL_BACKEND_503",
+            msg=f"Ollama inference failed: {exc}",
+            backend=engine.backend_name,
+        ).to_dict()
 
 
 async def _mock_api_predict_async(
@@ -197,9 +201,11 @@ async def _mock_api_predict_async(
         response.raise_for_status()
         body = response.json()
         result = body.get("result", body)
-        normalized = _normalize_result(result, "Mock API returned invalid response.")
-        normalized["backend"] = engine.backend_name
-        return normalized
+        return InferenceOutput.from_payload(
+            result,
+            default_msg="Mock API returned invalid response.",
+            backend=engine.backend_name,
+        ).to_dict()
     except Exception as exc:
         logger.warning(
             "predict_quality_async(mock_api): request failed url=%s error=%s",
@@ -213,9 +219,9 @@ async def _mock_api_predict_async(
             fallback["msg"] = f"Mock API fallback to simulated inference: {exc}"
             fallback["backend"] = f"{engine.backend_name}->simulated"
             return fallback
-        return {
-            "decision": "Error",
-            "code": "ERR_MODEL_BACKEND_503",
-            "msg": f"Mock API inference failed: {exc}",
-            "backend": engine.backend_name,
-        }
+        return InferenceOutput(
+            decision="Error",
+            code="ERR_MODEL_BACKEND_503",
+            msg=f"Mock API inference failed: {exc}",
+            backend=engine.backend_name,
+        ).to_dict()

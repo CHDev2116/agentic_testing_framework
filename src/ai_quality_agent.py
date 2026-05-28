@@ -21,6 +21,10 @@ from util.cli_logging import configure_cli_logging
 from util.failure_memory import FailureMemoryStore
 from util.metrics_pool import MetricsProcessPool
 from util.monitor_performance import async_monitor_performance, gather_with_timing
+from agent.loopback_planner import (
+    SimulatedLoopbackPlanner,
+    create_loopback_planner,
+)
 from engine.image_processor import ImageProcessor
 from engine.vision_math import calculate_metrics
 from eval.arbitrator import (
@@ -34,6 +38,7 @@ from eval.benchmark_evaluator import (
     get_release_decision,
 )
 from models.async_inference import predict_quality_async
+from models.contracts import AgentInferenceOutput, AgentStep
 from models.inference_adapter import build_inference_engine
 
 logger = logging.getLogger(__name__)
@@ -215,6 +220,44 @@ def load_config(profile="dev", config_path=None):
         return merged_config, " + ".join(config_sources)
 
     return merged_config, "DEFAULT_CONFIG"
+
+
+def _apply_runtime_overrides(
+    config: Dict[str, Any],
+    config_source: str,
+    *,
+    inference_backend_override: Optional[str] = None,
+    loopback_planner_override: Optional[str] = None,
+    planner_timeout_s_override: Optional[float] = None,
+    planner_model_override: Optional[str] = None,
+    planner_require_healthy_override: Optional[bool] = None,
+):
+    source = config_source
+    if inference_backend_override:
+        config.setdefault("model_settings", {}).setdefault("inference", {})
+        config["model_settings"]["inference"]["backend"] = inference_backend_override
+        source = f"{source} + CLI(backend={inference_backend_override})"
+    if loopback_planner_override:
+        config.setdefault("runtime", {}).setdefault("loopback_planner", {})
+        config["runtime"]["loopback_planner"]["mode"] = loopback_planner_override
+        source = f"{source} + CLI(loopback_planner={loopback_planner_override})"
+    if planner_timeout_s_override is not None:
+        config.setdefault("runtime", {}).setdefault("loopback_planner", {}).setdefault("llm", {})
+        config["runtime"]["loopback_planner"]["llm"]["timeout_s"] = float(planner_timeout_s_override)
+        source = f"{source} + CLI(planner_timeout_s={planner_timeout_s_override})"
+    if planner_model_override:
+        config.setdefault("runtime", {}).setdefault("loopback_planner", {}).setdefault("llm", {})
+        config["runtime"]["loopback_planner"]["llm"]["model"] = planner_model_override
+        source = f"{source} + CLI(planner_model={planner_model_override})"
+    if planner_require_healthy_override is not None:
+        config.setdefault("runtime", {}).setdefault("loopback_planner", {})
+        config["runtime"]["loopback_planner"]["require_healthy_on_startup"] = bool(
+            planner_require_healthy_override
+        )
+        source = (
+            f"{source} + CLI(planner_require_healthy={planner_require_healthy_override})"
+        )
+    return source
 
 
 class QuantizedVisionAgent:
@@ -461,34 +504,32 @@ def classify_loopback_signal(ai_result):
 
 
 def decide_loopback_action(signal, engine_metrics, thresholds_cfg, loopback_guard_cfg):
-    brightness = float(engine_metrics.get("avg_brightness", engine_metrics.get("brightness", 0.0)))
-    sharpness = float(engine_metrics.get("sharpness", 0.0))
-    min_brightness = float(thresholds_cfg.get("min_brightness", 40.0))
-    max_brightness = float(thresholds_cfg.get("max_brightness", 220.0))
-    min_sharpness = float(thresholds_cfg.get("min_sharpness", 20.0))
-    overexposure_stop_ratio = float(loopback_guard_cfg.get("overexposure_stop_ratio", 0.95))
-    underexposure_stop_ratio = float(loopback_guard_cfg.get("underexposure_stop_ratio", 1.05))
+    planner = SimulatedLoopbackPlanner()
+    plan = planner.plan(
+        signal=signal,
+        engine_metrics=engine_metrics,
+        thresholds_cfg=thresholds_cfg,
+        loopback_guard_cfg=loopback_guard_cfg,
+        attempt_history=[],
+    )
+    return plan.action, plan.stop_reason
 
-    if signal == "under":
-        if brightness >= min_brightness:
-            return None, "engine_disagrees_underexposed"
-        if brightness >= (max_brightness * overexposure_stop_ratio):
-            return None, "near_overexposure_guard"
-        return "brighten", "retry_scheduled"
 
-    if signal == "over":
-        if brightness <= max_brightness:
-            return None, "engine_disagrees_overexposed"
-        if brightness <= (min_brightness * underexposure_stop_ratio):
-            return None, "near_underexposure_guard"
-        return "dim", "retry_scheduled"
-
-    if signal == "blurry":
-        if sharpness >= min_sharpness:
-            return None, "engine_disagrees_blurry"
-        return "sharpen", "retry_scheduled"
-
-    return None, f"signal_not_recoverable ({signal})"
+def plan_next_action(
+    *,
+    signal: str,
+    engine_metrics: Dict[str, Any],
+    thresholds_cfg: Dict[str, Any],
+    loopback_guard_cfg: Dict[str, Any],
+):
+    planner = SimulatedLoopbackPlanner()
+    return planner.plan(
+        signal=signal,
+        engine_metrics=engine_metrics,
+        thresholds_cfg=thresholds_cfg,
+        loopback_guard_cfg=loopback_guard_cfg,
+        attempt_history=[],
+    )
 
 
 def summarize_performance(perf_samples):
@@ -544,6 +585,62 @@ def summarize_performance(perf_samples):
             "high" if len(perf_samples) >= 100 else "low (recommend >=100 images for stable trend)"
         ),
     }
+
+
+def _build_agent_inference_output(
+    *,
+    image_path: str,
+    attempt_history: List[Dict[str, Any]],
+    final_ai_result: Dict[str, Any],
+    total_latency_ms: float,
+) -> Dict[str, Any]:
+    steps: List[AgentStep] = []
+    for idx, attempt in enumerate(attempt_history):
+        signal = str(attempt.get("loopback_signal", "other")).lower()
+        if signal not in {"under", "over", "blurry", "other"}:
+            signal = "other"
+        action = str(attempt.get("action", "stop")).lower()
+        if action not in {"brighten", "dim", "sharpen", "stop"}:
+            action = "stop"
+        metrics_before = {
+            "avg_brightness": float(attempt.get("avg_brightness", 0.0)),
+            "sharpness": float(attempt.get("sharpness", 0.0)),
+        }
+        metrics_after = None
+        if idx + 1 < len(attempt_history):
+            next_attempt = attempt_history[idx + 1]
+            metrics_after = {
+                "avg_brightness": float(next_attempt.get("avg_brightness", 0.0)),
+                "sharpness": float(next_attempt.get("sharpness", 0.0)),
+            }
+        steps.append(
+            AgentStep(
+                attempt=int(attempt.get("attempt", idx + 1)),
+                signal=signal,
+                action=action,
+                rationale=str(attempt.get("rationale", "")),
+                fallback_used=bool(attempt.get("planner_fallback_used", False)),
+                metrics_before=metrics_before,
+                metrics_after=metrics_after,
+                latency_ms=float(attempt.get("latency_ms", 0.0)),
+            )
+        )
+
+    final_release = "NO_GO"
+    if attempt_history:
+        release = str(attempt_history[-1].get("release", "NO_GO")).upper()
+        if release in {"GO", "REVIEW", "NO_GO"}:
+            final_release = release
+
+    output = AgentInferenceOutput(
+        image_path=image_path,
+        final_decision=final_release,
+        error_code=str(final_ai_result.get("code", "SUCCESS_200")),
+        error_message=str(final_ai_result.get("msg", final_ai_result.get("decision", "Optimal"))),
+        steps=steps,
+        total_latency_ms=float(total_latency_ms),
+    )
+    return output.model_dump()
 
 
 def monitor_resources(stop_event, interval=0.1):
@@ -619,9 +716,11 @@ async def collect_peak_resources_during_async(awaitable_fn, *args):
 
 def _build_photo_process_context(config: Dict[str, Any], agent: QuantizedVisionAgent) -> Dict[str, Any]:
     loopback_guard_cfg = config.get("runtime", {}).get("loopback_guard", {})
+    loopback_planner = create_loopback_planner(config)
     return {
         "agent": agent,
         "image_processor": ImageProcessor(),
+        "loopback_planner": loopback_planner,
         "max_retry": int(config.get("runtime", {}).get("max_retry", 3)),
         "thresholds_cfg": config.get("thresholds", {}),
         "loopback_guard_cfg": loopback_guard_cfg,
@@ -671,6 +770,9 @@ def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
                 "model_decision": ai_result.get("decision"),
                 "error_code": ai_result.get("code"),
                 "release": "NO_GO",
+                "loopback_signal": "other",
+                "action": "stop",
+                "rationale": "metrics unavailable; stop loopback",
                 "latency_ms": latency,
             })
             loopback_stop_reason = "metrics_unavailable"
@@ -696,6 +798,8 @@ def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             "error_code": ai_result.get("code"),
             "release": release_decision,
             "loopback_signal": loopback_signal,
+            "action": "stop",
+            "rationale": "release resolved or awaiting planner decision",
             "avg_brightness": round(float(engine_metrics.get("avg_brightness", 0.0)), 4),
             "sharpness": round(float(engine_metrics.get("sharpness", 0.0)), 4),
             "latency_ms": latency,
@@ -710,11 +814,28 @@ def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             loopback_stop_reason = "max_retry_reached"
             break
 
-        next_action, action_stop_reason = decide_loopback_action(
-            loopback_signal, engine_metrics, ctx["thresholds_cfg"], ctx.get("loopback_guard_cfg", {})
+        plan = ctx["loopback_planner"].plan(
+            signal=loopback_signal,
+            engine_metrics=engine_metrics,
+            thresholds_cfg=ctx["thresholds_cfg"],
+            loopback_guard_cfg=ctx.get("loopback_guard_cfg", {}),
+            attempt_history=attempt_history,
         )
-        if not next_action:
-            loopback_stop_reason = action_stop_reason
+        logger.info(
+            "Loopback planner for %s attempt=%s signal=%s action=%s stop_reason=%s rationale=%s",
+            file_name,
+            attempt_idx + 1,
+            loopback_signal,
+            plan.action,
+            plan.stop_reason,
+            plan.rationale,
+        )
+        attempt_history[-1]["planner_fallback_used"] = bool(plan.fallback_used)
+        attempt_history[-1]["planner_backend"] = str(plan.planner_backend)
+        attempt_history[-1]["action"] = str(plan.action or "stop")
+        attempt_history[-1]["rationale"] = str(plan.rationale)
+        if not plan.action:
+            loopback_stop_reason = plan.stop_reason
             break
 
         if len(attempt_history) >= 2:
@@ -726,17 +847,17 @@ def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             if prev_signal in {"under", "over"} and prev_signal != loopback_signal:
                 loopback_stop_reason = "oscillation_detected"
                 break
-            if next_action == "brighten" and brightness_gain < ctx["min_brightness_gain"]:
+            if plan.action == "brighten" and brightness_gain < ctx["min_brightness_gain"]:
                 loopback_stop_reason = f"insufficient_brightness_gain (<{ctx['min_brightness_gain']})"
                 break
-            if next_action == "dim" and (prev_brightness - current_brightness) < ctx["min_brightness_gain"]:
+            if plan.action == "dim" and (prev_brightness - current_brightness) < ctx["min_brightness_gain"]:
                 loopback_stop_reason = f"insufficient_dimming_gain (<{ctx['min_brightness_gain']})"
                 break
-            if next_action == "sharpen" and (current_sharpness - prev_sharpness) < ctx["min_sharpness_gain"]:
+            if plan.action == "sharpen" and (current_sharpness - prev_sharpness) < ctx["min_sharpness_gain"]:
                 loopback_stop_reason = f"insufficient_sharpness_gain (<{ctx['min_sharpness_gain']})"
                 break
 
-        if next_action == "brighten":
+        if plan.action == "brighten":
             current_path = image_processor.adjust_brightness(
                 current_path,
                 level=ctx["brighten_factor"],
@@ -750,7 +871,7 @@ def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
                 file_name,
                 ctx["brighten_factor"],
             )
-        elif next_action == "dim":
+        elif plan.action == "dim":
             current_path = image_processor.adjust_brightness(
                 current_path,
                 level=ctx["dim_factor"],
@@ -764,7 +885,7 @@ def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
                 file_name,
                 ctx["dim_factor"],
             )
-        elif next_action == "sharpen":
+        elif plan.action == "sharpen":
             current_path = image_processor.apply_sharpen(
                 current_path,
                 file_stem=file_stem,
@@ -776,7 +897,7 @@ def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
                 ctx["max_retry"],
                 file_name,
             )
-        loopback_stop_reason = f"retry_scheduled ({next_action})"
+        loopback_stop_reason = f"retry_scheduled ({plan.action})"
 
     cpu_delta = max(0.0, time.process_time() - cpu_start)
     wall_delta = max(final_latency / 1000.0, 1e-6)
@@ -798,6 +919,12 @@ def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             "file": file_name,
             "metrics": final_metrics,
             "decision": final_ai_result,
+            "inference_output": _build_agent_inference_output(
+                image_path=path,
+                attempt_history=attempt_history,
+                final_ai_result=final_ai_result or {},
+                total_latency_ms=round(final_latency, 2),
+            ),
             "latency_ms": round(final_latency, 2),
             "image_meta": image_meta,
             "process_cpu_usage_pct": process_cpu_usage_pct,
@@ -809,6 +936,12 @@ def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
                 "dim_factor": ctx["dim_factor"],
                 "overexposure_stop_ratio": ctx["overexposure_stop_ratio"],
                 "retry_count": max(0, len(attempt_history) - 1),
+                "fallback_used_count": sum(
+                    1 for item in attempt_history if bool(item.get("planner_fallback_used"))
+                ),
+                "fallback_used": any(
+                    bool(item.get("planner_fallback_used")) for item in attempt_history
+                ),
                 "stop_reason": loopback_stop_reason,
                 "attempts": attempt_history,
             },
@@ -882,6 +1015,9 @@ async def _process_single_photo_async(
                     "model_decision": ai_result.get("decision"),
                     "error_code": ai_result.get("code"),
                     "release": "NO_GO",
+                "loopback_signal": "other",
+                "action": "stop",
+                "rationale": "metrics unavailable; stop loopback",
                     "latency_ms": latency,
                 })
                 loopback_stop_reason = "metrics_unavailable"
@@ -907,6 +1043,8 @@ async def _process_single_photo_async(
                 "error_code": ai_result.get("code"),
                 "release": release_decision,
                 "loopback_signal": loopback_signal,
+                "action": "stop",
+                "rationale": "release resolved or awaiting planner decision",
                 "avg_brightness": round(float(engine_metrics.get("avg_brightness", 0.0)), 4),
                 "sharpness": round(float(engine_metrics.get("sharpness", 0.0)), 4),
                 "latency_ms": latency,
@@ -921,14 +1059,28 @@ async def _process_single_photo_async(
                 loopback_stop_reason = "max_retry_reached"
                 break
 
-            next_action, action_stop_reason = decide_loopback_action(
-                loopback_signal,
-                engine_metrics,
-                ctx["thresholds_cfg"],
-                ctx.get("loopback_guard_cfg", {}),
+            plan = ctx["loopback_planner"].plan(
+                signal=loopback_signal,
+                engine_metrics=engine_metrics,
+                thresholds_cfg=ctx["thresholds_cfg"],
+                loopback_guard_cfg=ctx.get("loopback_guard_cfg", {}),
+                attempt_history=attempt_history,
             )
-            if not next_action:
-                loopback_stop_reason = action_stop_reason
+            logger.info(
+                "Loopback planner (async) for %s attempt=%s signal=%s action=%s stop_reason=%s rationale=%s",
+                file_name,
+                attempt_idx + 1,
+                loopback_signal,
+                plan.action,
+                plan.stop_reason,
+                plan.rationale,
+            )
+            attempt_history[-1]["planner_fallback_used"] = bool(plan.fallback_used)
+            attempt_history[-1]["planner_backend"] = str(plan.planner_backend)
+            attempt_history[-1]["action"] = str(plan.action or "stop")
+            attempt_history[-1]["rationale"] = str(plan.rationale)
+            if not plan.action:
+                loopback_stop_reason = plan.stop_reason
                 break
 
             if len(attempt_history) >= 2:
@@ -940,17 +1092,17 @@ async def _process_single_photo_async(
                 if prev_signal in {"under", "over"} and prev_signal != loopback_signal:
                     loopback_stop_reason = "oscillation_detected"
                     break
-                if next_action == "brighten" and brightness_gain < ctx["min_brightness_gain"]:
+                if plan.action == "brighten" and brightness_gain < ctx["min_brightness_gain"]:
                     loopback_stop_reason = f"insufficient_brightness_gain (<{ctx['min_brightness_gain']})"
                     break
-                if next_action == "dim" and (prev_brightness - current_brightness) < ctx["min_brightness_gain"]:
+                if plan.action == "dim" and (prev_brightness - current_brightness) < ctx["min_brightness_gain"]:
                     loopback_stop_reason = f"insufficient_dimming_gain (<{ctx['min_brightness_gain']})"
                     break
-                if next_action == "sharpen" and (current_sharpness - prev_sharpness) < ctx["min_sharpness_gain"]:
+                if plan.action == "sharpen" and (current_sharpness - prev_sharpness) < ctx["min_sharpness_gain"]:
                     loopback_stop_reason = f"insufficient_sharpness_gain (<{ctx['min_sharpness_gain']})"
                     break
 
-            if next_action == "brighten":
+            if plan.action == "brighten":
                 current_path = await asyncio.to_thread(
                     image_processor.adjust_brightness,
                     current_path,
@@ -958,7 +1110,7 @@ async def _process_single_photo_async(
                     file_stem,
                     attempt_idx + 1,
                 )
-            elif next_action == "dim":
+            elif plan.action == "dim":
                 current_path = await asyncio.to_thread(
                     image_processor.adjust_brightness,
                     current_path,
@@ -966,14 +1118,14 @@ async def _process_single_photo_async(
                     file_stem,
                     attempt_idx + 1,
                 )
-            elif next_action == "sharpen":
+            elif plan.action == "sharpen":
                 current_path = await asyncio.to_thread(
                     image_processor.apply_sharpen,
                     current_path,
                     file_stem,
                     attempt_idx + 1,
                 )
-            loopback_stop_reason = f"retry_scheduled ({next_action})"
+            loopback_stop_reason = f"retry_scheduled ({plan.action})"
 
         cpu_delta = max(0.0, time.process_time() - cpu_start)
         wall_delta = max(final_latency / 1000.0, 1e-6)
@@ -995,6 +1147,12 @@ async def _process_single_photo_async(
                 "file": file_name,
                 "metrics": final_metrics,
                 "decision": final_ai_result,
+                "inference_output": _build_agent_inference_output(
+                    image_path=path,
+                    attempt_history=attempt_history,
+                    final_ai_result=final_ai_result or {},
+                    total_latency_ms=round(final_latency, 2),
+                ),
                 "latency_ms": round(final_latency, 2),
                 "image_meta": image_meta,
                 "process_cpu_usage_pct": process_cpu_usage_pct,
@@ -1006,6 +1164,12 @@ async def _process_single_photo_async(
                     "dim_factor": ctx["dim_factor"],
                     "overexposure_stop_ratio": ctx["overexposure_stop_ratio"],
                     "retry_count": max(0, len(attempt_history) - 1),
+                    "fallback_used_count": sum(
+                        1 for item in attempt_history if bool(item.get("planner_fallback_used"))
+                    ),
+                    "fallback_used": any(
+                        bool(item.get("planner_fallback_used")) for item in attempt_history
+                    ),
                     "stop_reason": loopback_stop_reason,
                     "attempts": attempt_history,
                 },
@@ -1258,6 +1422,10 @@ def run_batch_test(
     config_path=None,
     deterministic=False,
     inference_backend_override=None,
+    loopback_planner_override=None,
+    planner_timeout_s_override=None,
+    planner_model_override=None,
+    planner_require_healthy_override=None,
     performance_analysis=False,
     overhead_analysis=False,
     stress_test_count=None,
@@ -1266,10 +1434,15 @@ def run_batch_test(
 ):
     config, config_source = load_config(profile=config_profile, config_path=config_path)
     error_report_dir = config.get("folders", {}).get("logs", "logs/errors")
-    if inference_backend_override:
-        config.setdefault("model_settings", {}).setdefault("inference", {})
-        config["model_settings"]["inference"]["backend"] = inference_backend_override
-        config_source = f"{config_source} + CLI(backend={inference_backend_override})"
+    config_source = _apply_runtime_overrides(
+        config,
+        config_source,
+        inference_backend_override=inference_backend_override,
+        loopback_planner_override=loopback_planner_override,
+        planner_timeout_s_override=planner_timeout_s_override,
+        planner_model_override=planner_model_override,
+        planner_require_healthy_override=planner_require_healthy_override,
+    )
     logger.info("Loaded config source: %s", config_source)
 
     pool_cm = (
@@ -1485,6 +1658,10 @@ def run_batch_test_async(
     config_path=None,
     deterministic=False,
     inference_backend_override=None,
+    loopback_planner_override=None,
+    planner_timeout_s_override=None,
+    planner_model_override=None,
+    planner_require_healthy_override=None,
     performance_analysis=False,
     overhead_analysis=False,
     stress_test_count=None,
@@ -1500,10 +1677,15 @@ def run_batch_test_async(
     """
     config, config_source = load_config(profile=config_profile, config_path=config_path)
     error_report_dir = config.get("folders", {}).get("logs", "logs/errors")
-    if inference_backend_override:
-        config.setdefault("model_settings", {}).setdefault("inference", {})
-        config["model_settings"]["inference"]["backend"] = inference_backend_override
-        config_source = f"{config_source} + CLI(backend={inference_backend_override})"
+    config_source = _apply_runtime_overrides(
+        config,
+        config_source,
+        inference_backend_override=inference_backend_override,
+        loopback_planner_override=loopback_planner_override,
+        planner_timeout_s_override=planner_timeout_s_override,
+        planner_model_override=planner_model_override,
+        planner_require_healthy_override=planner_require_healthy_override,
+    )
     logger.info(
         "Loaded config source: %s (async batch, concurrency=%s, parallel_metrics=%s)",
         config_source,
@@ -1630,13 +1812,24 @@ def _run_batch_test_async_body(
     )
 
 
-def run_profile_comparison(profiles, inference_backend_override=None):
+def run_profile_comparison(
+    profiles,
+    inference_backend_override=None,
+    loopback_planner_override=None,
+    planner_timeout_s_override=None,
+    planner_model_override=None,
+    planner_require_healthy_override=None,
+):
     profile_outputs = []
     for profile in profiles:
         logger.info("Running profile: %s", profile)
         result = run_batch_test(
             config_profile=profile,
             inference_backend_override=inference_backend_override,
+            loopback_planner_override=loopback_planner_override,
+            planner_timeout_s_override=planner_timeout_s_override,
+            planner_model_override=planner_model_override,
+            planner_require_healthy_override=planner_require_healthy_override,
             overhead_analysis=False,
         )
         if result:
@@ -1676,7 +1869,15 @@ def run_profile_comparison(profiles, inference_backend_override=None):
     return comparison_report
 
 
-def run_repeatability_test(profile, runs=5, inference_backend_override=None):
+def run_repeatability_test(
+    profile,
+    runs=5,
+    inference_backend_override=None,
+    loopback_planner_override=None,
+    planner_timeout_s_override=None,
+    planner_model_override=None,
+    planner_require_healthy_override=None,
+):
     logger.info(
         "Running repeatability test: profile=%s, runs=%s",
         profile,
@@ -1689,6 +1890,10 @@ def run_repeatability_test(profile, runs=5, inference_backend_override=None):
             config_profile=profile,
             deterministic=True,
             inference_backend_override=inference_backend_override,
+            loopback_planner_override=loopback_planner_override,
+            planner_timeout_s_override=planner_timeout_s_override,
+            planner_model_override=planner_model_override,
+            planner_require_healthy_override=planner_require_healthy_override,
             overhead_analysis=False,
         )
         if run_result:
@@ -1788,6 +1993,28 @@ if __name__ == "__main__":
         help="Temporarily override inference backend without editing config"
     )
     parser.add_argument(
+        "--loopback-planner",
+        default=None,
+        choices=["simulated", "llm"],
+        help="Temporarily override loopback planner mode without editing config",
+    )
+    parser.add_argument(
+        "--planner-timeout-s",
+        type=float,
+        default=None,
+        help="Override runtime.loopback_planner.llm.timeout_s from CLI",
+    )
+    parser.add_argument(
+        "--planner-model",
+        default=None,
+        help="Override runtime.loopback_planner.llm.model from CLI",
+    )
+    parser.add_argument(
+        "--planner-skip-health-check",
+        action="store_true",
+        help="Skip startup health check for loopback planner in llm mode",
+    )
+    parser.add_argument(
         "--performance-analysis",
         action="store_true",
         help="Generate optional performance deep-dive report (latency vs image size and CPU)"
@@ -1830,18 +2057,36 @@ if __name__ == "__main__":
             run_repeatability_test(
                 args.repeatability_test,
                 runs=max(1, args.repeatability_runs),
-                inference_backend_override=args.inference_backend
+                inference_backend_override=args.inference_backend,
+                loopback_planner_override=args.loopback_planner,
+                planner_timeout_s_override=args.planner_timeout_s,
+                planner_model_override=args.planner_model,
+                planner_require_healthy_override=(
+                    False if args.planner_skip_health_check else None
+                ),
             )
         elif args.compare_profiles:
             run_profile_comparison(
                 args.compare_profiles,
-                inference_backend_override=args.inference_backend
+                inference_backend_override=args.inference_backend,
+                loopback_planner_override=args.loopback_planner,
+                planner_timeout_s_override=args.planner_timeout_s,
+                planner_model_override=args.planner_model,
+                planner_require_healthy_override=(
+                    False if args.planner_skip_health_check else None
+                ),
             )
         else:
             batch_kwargs = dict(
                 config_profile=args.profile,
                 config_path=args.config,
                 inference_backend_override=args.inference_backend,
+                loopback_planner_override=args.loopback_planner,
+                planner_timeout_s_override=args.planner_timeout_s,
+                planner_model_override=args.planner_model,
+                planner_require_healthy_override=(
+                    False if args.planner_skip_health_check else None
+                ),
                 performance_analysis=args.performance_analysis,
                 overhead_analysis=args.overhead_analysis,
                 stress_test_count=100 if args.stress_test_100 else None,

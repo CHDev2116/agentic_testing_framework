@@ -4,28 +4,12 @@ import os
 from importlib import import_module
 from typing import Any, Dict, List
 
+from models.contracts import InferenceOutput
 from models.llama_quantizer import LlamaQuantizer
 
 
-def _normalize_result(result: Dict[str, Any], default_msg: str) -> Dict[str, Any]:
-    if not isinstance(result, dict):
-        return {
-            "decision": "Error",
-            "code": "ERR_MODEL_RESPONSE_422",
-            "msg": default_msg,
-        }
-
-    normalized: Dict[str, Any] = {
-        "decision": str(result.get("decision", "Error")),
-        "code": str(result.get("code", "ERR_MODEL_RESPONSE_422")),
-        "msg": str(result.get("msg", default_msg)),
-    }
-    if result.get("confidence") is not None:
-        try:
-            normalized["confidence"] = float(result["confidence"])
-        except (TypeError, ValueError):
-            pass
-    return normalized
+def _normalize_result(result: Any, default_msg: str) -> Dict[str, Any]:
+    return InferenceOutput.from_payload(result, default_msg=default_msg).to_dict()
 
 
 _REQUESTS_MODULE = None
@@ -46,9 +30,11 @@ class SimulatedInferenceEngine:
 
     def predict_quality(self, photo_path: str, metrics: Dict[str, Any]) -> Dict[str, str]:
         result = self.quantizer.predict_quality(metrics)
-        normalized = _normalize_result(result, "Simulated inference returned invalid response.")
-        normalized["backend"] = self.backend_name
-        return normalized
+        return InferenceOutput.from_payload(
+            result,
+            default_msg="Simulated inference returned invalid response.",
+            backend=self.backend_name,
+        ).to_dict()
 
 
 class OllamaVisionInferenceEngine:
@@ -113,21 +99,23 @@ class OllamaVisionInferenceEngine:
             body = response.json()
             model_text = str(body.get("response", ""))
             parsed = self._extract_json_object(model_text)
-            normalized = _normalize_result(parsed, "Ollama returned unparsable response.")
-            normalized["backend"] = self.backend_name
-            return normalized
+            return InferenceOutput.from_payload(
+                parsed,
+                default_msg="Ollama returned unparsable response.",
+                backend=self.backend_name,
+            ).to_dict()
         except Exception as exc:
             if self.fallback_to_simulated:
                 fallback = self.simulated_fallback.predict_quality(photo_path, metrics)
                 fallback["msg"] = f"Ollama fallback to simulated inference: {exc}"
                 fallback["backend"] = f"{self.backend_name}->simulated"
                 return fallback
-            return {
-                "decision": "Error",
-                "code": "ERR_MODEL_BACKEND_503",
-                "msg": f"Ollama inference failed: {exc}",
-                "backend": self.backend_name,
-            }
+            return InferenceOutput(
+                decision="Error",
+                code="ERR_MODEL_BACKEND_503",
+                msg=f"Ollama inference failed: {exc}",
+                backend=self.backend_name,
+            ).to_dict()
 
 
 class MockAPIInferenceEngine:
@@ -161,21 +149,23 @@ class MockAPIInferenceEngine:
             response.raise_for_status()
             body = response.json()
             result = body.get("result", body)
-            normalized = _normalize_result(result, "Mock API returned invalid response.")
-            normalized["backend"] = self.backend_name
-            return normalized
+            return InferenceOutput.from_payload(
+                result,
+                default_msg="Mock API returned invalid response.",
+                backend=self.backend_name,
+            ).to_dict()
         except Exception as exc:
             if self.fallback_to_simulated:
                 fallback = self.simulated_fallback.predict_quality(photo_path, metrics)
                 fallback["msg"] = f"Mock API fallback to simulated inference: {exc}"
                 fallback["backend"] = f"{self.backend_name}->simulated"
                 return fallback
-            return {
-                "decision": "Error",
-                "code": "ERR_MODEL_BACKEND_503",
-                "msg": f"Mock API inference failed: {exc}",
-                "backend": self.backend_name,
-            }
+            return InferenceOutput(
+                decision="Error",
+                code="ERR_MODEL_BACKEND_503",
+                msg=f"Mock API inference failed: {exc}",
+                backend=self.backend_name,
+            ).to_dict()
 
 
 class LlamaCppInferenceEngine:
@@ -279,21 +269,23 @@ class LlamaCppInferenceEngine:
                 body.get("choices", [{}])[0].get("message", {}).get("content", "")
             )
             parsed = self._extract_json_object(model_text)
-            normalized = _normalize_result(parsed, "llama.cpp returned unparsable response.")
-            normalized["backend"] = self.backend_name
-            return normalized
+            return InferenceOutput.from_payload(
+                parsed,
+                default_msg="llama.cpp returned unparsable response.",
+                backend=self.backend_name,
+            ).to_dict()
         except Exception as exc:
             if self.fallback_to_simulated:
                 fallback = self.simulated_fallback.predict_quality(photo_path, metrics)
                 fallback["msg"] = f"llama.cpp fallback to simulated inference: {exc}"
                 fallback["backend"] = f"{self.backend_name}->simulated"
                 return fallback
-            return {
-                "decision": "Error",
-                "code": "ERR_MODEL_BACKEND_503",
-                "msg": f"llama.cpp inference failed: {exc}",
-                "backend": self.backend_name,
-            }
+            return InferenceOutput(
+                decision="Error",
+                code="ERR_MODEL_BACKEND_503",
+                msg=f"llama.cpp inference failed: {exc}",
+                backend=self.backend_name,
+            ).to_dict()
 
 
 def build_inference_engine(config: Dict[str, Any]):

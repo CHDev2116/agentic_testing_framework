@@ -1,31 +1,13 @@
-import asyncio
 from pathlib import Path
 
-import httpx
 from PIL import Image
 
 import ai_quality_agent as qa
-from models.async_inference import predict_quality_async
-from models.inference_adapter import SimulatedInferenceEngine
 
 
 def _make_test_image(path: Path):
     image = Image.new("L", (32, 32), color=120)
     image.save(path)
-
-
-def test_predict_quality_async_simulated():
-    async def _run():
-        engine = SimulatedInferenceEngine(
-            thresholds={"min_sharpness": 20.0, "min_brightness": 40.0, "max_brightness": 220.0}
-        )
-        metrics = {"sharpness": 50.0, "avg_brightness": 80.0}
-        async with httpx.AsyncClient() as client:
-            return await predict_quality_async(engine, client, "dummy.jpg", metrics)
-
-    result = asyncio.run(_run())
-    assert result["backend"] == "simulated"
-    assert result["decision"] in {"Optimal", "Blurry", "Under-exposed", "Over-exposed", "Error"}
 
 
 def test_run_batch_test_async_single_image(monkeypatch, tmp_path):

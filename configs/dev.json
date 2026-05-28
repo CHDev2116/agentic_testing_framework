@@ -33,7 +33,11 @@
         "logs": "logs/dev"
     },
     "runtime": {
-        "oom_probability": 0.0
+        "oom_probability": 0.0,
+        "loopback_planner": {
+            "mode": "simulated",
+            "require_healthy_on_startup": true
+        }
     },
     "quality_gate": {
         "target_pass_rate": 80.0

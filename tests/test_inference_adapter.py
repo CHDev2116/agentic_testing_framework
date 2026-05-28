@@ -1,4 +1,5 @@
 from models.inference_adapter import _normalize_result
+from models.contracts import InferenceOutput
 
 
 def test_normalize_result_handles_invalid_payload():
@@ -17,3 +18,13 @@ def test_normalize_result_parses_confidence():
     assert normalized["code"] == "SUCCESS_200"
     assert normalized["msg"] == "ok"
     assert normalized["confidence"] == 0.88
+
+
+def test_inference_output_from_payload_preserves_backend():
+    output = InferenceOutput.from_payload(
+        {"decision": "Optimal", "code": "SUCCESS_200", "msg": "ok"},
+        default_msg="fallback",
+        backend="mock_api",
+    )
+    assert output.backend == "mock_api"
+    assert output.to_dict()["backend"] == "mock_api"
