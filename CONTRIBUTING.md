@@ -79,6 +79,16 @@ PYTHONPATH=src python src/ai_quality_agent.py --profile dev --performance-analys
 4. **Green CI**: Ensure tests, Ruff, and **mypy** pass locally.
 5. **Docs**: If you change CLI flags, config shape, or inference behavior, update `README.md` and any affected file under `docs/`.
 
+## Fast pre-push check (recommended)
+
+Use one command to run the same quality gates CI enforces for PRs:
+
+```bash
+bash scripts/dev_prepush_check.sh
+```
+
+This keeps PR feedback fast and avoids common red-X cycles caused by lint/type/test drift.
+
 ## Code style
 
 Follow existing patterns in nearby modules (logging, typing, error messages). Prefer clear names and small functions over clever one-liners.

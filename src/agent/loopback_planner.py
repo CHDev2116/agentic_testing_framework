@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from importlib import import_module
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Protocol
 
 from models.contracts import LoopbackPlan
 
