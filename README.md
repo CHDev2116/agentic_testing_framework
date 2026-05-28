@@ -217,6 +217,12 @@ docker run --rm \
 ```bash
 python -m pip install -U pip
 pip install -e ".[dev]"
+bash scripts/dev_prepush_check.sh
+```
+
+Or run each check manually:
+
+```bash
 ruff check src tests app.py test_connection.py
 mypy --explicit-package-bases src
 MYPYPATH=src mypy --explicit-package-bases app.py test_connection.py
