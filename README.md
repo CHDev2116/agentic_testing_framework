@@ -192,6 +192,16 @@ python3 src/ai_quality_agent.py --profile dev --async-batch --parallel-metrics
 python3 src/test_failure_memory_retrieval.py
 ```
 
+Deterministic replay (planner trace):
+
+```bash
+# 1) Record planner steps to JSONL
+python3 src/ai_quality_agent.py --profile dev --replay-mode record --replay-file results/replay_trace.jsonl
+
+# 2) Replay with the same inputs (hash mismatch or missing step => hard fail for that image)
+python3 src/ai_quality_agent.py --profile dev --replay-mode replay --replay-file results/replay_trace.jsonl
+```
+
 </details>
 
 <details>
