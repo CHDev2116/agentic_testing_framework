@@ -42,3 +42,17 @@ def test_apply_runtime_overrides_updates_planner_health_policy():
     assert config["runtime"]["loopback_planner"]["require_healthy_on_startup"] is False
     assert "planner_require_healthy=False" in source
 
+
+def test_apply_runtime_overrides_updates_replay_settings():
+    config = {"runtime": {}}
+    source = qa._apply_runtime_overrides(
+        config,
+        "BASE",
+        replay_mode_override="record",
+        replay_file_override="results/replay_trace.jsonl",
+    )
+    assert config["runtime"]["replay_mode"] == "record"
+    assert config["runtime"]["replay_file"] == "results/replay_trace.jsonl"
+    assert "replay_mode=record" in source
+    assert "replay_file=results/replay_trace.jsonl" in source
+

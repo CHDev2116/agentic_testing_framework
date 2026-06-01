@@ -41,7 +41,15 @@ from eval.benchmark_evaluator import (
 )
 from models.async_inference import predict_quality_async
 from models.contracts import AgentInferenceOutput, AgentStep
+from models.contracts import LoopbackPlan
 from models.inference_adapter import build_inference_engine
+from util.replay_trace import (
+    append_replay_step,
+    build_replay_index,
+    get_replay_step,
+    load_replay_steps,
+    planner_input_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +244,8 @@ def _apply_runtime_overrides(
     async_per_image_timeout_s_override: Optional[float] = None,
     async_backend_health_check_override: Optional[bool] = None,
     async_backend_health_timeout_s_override: Optional[float] = None,
+    replay_mode_override: Optional[str] = None,
+    replay_file_override: Optional[str] = None,
 ):
     source = config_source
     if inference_backend_override:
@@ -286,6 +296,14 @@ def _apply_runtime_overrides(
         source = (
             f"{source} + CLI(async_backend_health_timeout_s={async_backend_health_timeout_s_override})"
         )
+    if replay_mode_override is not None:
+        config.setdefault("runtime", {})
+        config["runtime"]["replay_mode"] = str(replay_mode_override)
+        source = f"{source} + CLI(replay_mode={replay_mode_override})"
+    if replay_file_override is not None:
+        config.setdefault("runtime", {})
+        config["runtime"]["replay_file"] = str(replay_file_override)
+        source = f"{source} + CLI(replay_file={replay_file_override})"
     return source
 
 
@@ -802,10 +820,21 @@ async def collect_peak_resources_during_async(awaitable_fn, *args):
 def _build_photo_process_context(config: Dict[str, Any], agent: QuantizedVisionAgent) -> Dict[str, Any]:
     loopback_guard_cfg = config.get("runtime", {}).get("loopback_guard", {})
     loopback_planner = create_loopback_planner(config)
+    runtime_cfg = config.get("runtime", {})
+    replay_mode = str(runtime_cfg.get("replay_mode", "off")).lower()
+    replay_file = runtime_cfg.get("replay_file")
+    replay_index = None
+    if replay_mode in {"record", "replay"} and not replay_file:
+        raise ValueError("runtime.replay_file is required when runtime.replay_mode is record/replay")
+    if replay_mode == "replay":
+        replay_index = build_replay_index(load_replay_steps(str(replay_file)))
     return {
         "agent": agent,
         "image_processor": ImageProcessor(),
         "loopback_planner": loopback_planner,
+        "replay_mode": replay_mode,
+        "replay_file": str(replay_file) if replay_file is not None else None,
+        "replay_index": replay_index,
         "max_retry": int(config.get("runtime", {}).get("max_retry", 3)),
         "thresholds_cfg": config.get("thresholds", {}),
         "loopback_guard_cfg": loopback_guard_cfg,
@@ -815,6 +844,99 @@ def _build_photo_process_context(config: Dict[str, Any], agent: QuantizedVisionA
         "dim_factor": float(loopback_guard_cfg.get("dim_factor", 0.85)),
         "overexposure_stop_ratio": float(loopback_guard_cfg.get("overexposure_stop_ratio", 0.95)),
     }
+
+
+def _build_planner_trace_payload(
+    *,
+    image_path: str,
+    attempt: int,
+    signal: str,
+    engine_metrics: Dict[str, Any],
+    thresholds_cfg: Dict[str, Any],
+    loopback_guard_cfg: Dict[str, Any],
+    attempt_history: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    return {
+        "image_path": str(image_path),
+        "attempt": int(attempt),
+        "signal": str(signal),
+        "engine_metrics": engine_metrics,
+        "thresholds_cfg": thresholds_cfg,
+        "loopback_guard_cfg": loopback_guard_cfg,
+        "attempt_history": attempt_history,
+    }
+
+
+def _resolve_loopback_plan(
+    *,
+    ctx: Dict[str, Any],
+    image_path: str,
+    attempt: int,
+    signal: str,
+    engine_metrics: Dict[str, Any],
+    attempt_history: List[Dict[str, Any]],
+) -> LoopbackPlan:
+    trace_payload = _build_planner_trace_payload(
+        image_path=image_path,
+        attempt=attempt,
+        signal=signal,
+        engine_metrics=engine_metrics,
+        thresholds_cfg=ctx["thresholds_cfg"],
+        loopback_guard_cfg=ctx.get("loopback_guard_cfg", {}),
+        attempt_history=attempt_history,
+    )
+    trace_hash = planner_input_hash(trace_payload)
+    replay_mode = str(ctx.get("replay_mode", "off")).lower()
+    if replay_mode == "replay":
+        step = get_replay_step(
+            ctx["replay_index"],
+            image_path=image_path,
+            attempt=attempt,
+            expected_planner_input_hash=trace_hash,
+        )
+        plan = LoopbackPlan(
+            action=(step.get("action") or None),
+            stop_reason=str(step.get("stop_reason") or "replay"),
+            rationale=str(step.get("planner_output", {}).get("rationale", "replay step")),
+            fallback_used=False,
+            planner_backend=f"replay:{step.get('backend', 'unknown')}",
+        )
+        return plan
+
+    planner_start = time.perf_counter()
+    plan = ctx["loopback_planner"].plan(
+        signal=signal,
+        engine_metrics=engine_metrics,
+        thresholds_cfg=ctx["thresholds_cfg"],
+        loopback_guard_cfg=ctx.get("loopback_guard_cfg", {}),
+        attempt_history=attempt_history,
+    )
+    planner_latency_ms = (time.perf_counter() - planner_start) * 1000.0
+    if replay_mode == "record" and ctx.get("replay_file"):
+        append_replay_step(
+            ctx["replay_file"],
+            {
+                "image_path": str(image_path),
+                "attempt": int(attempt),
+                "metrics_before": {
+                    "avg_brightness": float(engine_metrics.get("avg_brightness", 0.0)),
+                    "sharpness": float(engine_metrics.get("sharpness", 0.0)),
+                },
+                "planner_input_hash": trace_hash,
+                "planner_output": {
+                    "action": str(plan.action or "stop"),
+                    "stop_reason": str(plan.stop_reason),
+                    "rationale": str(plan.rationale),
+                },
+                "action": str(plan.action or "stop"),
+                "signal": str(signal),
+                "backend": str(plan.planner_backend),
+                "latency_ms": round(planner_latency_ms, 4),
+                "stop_reason": str(plan.stop_reason),
+                "timestamp": datetime.now().isoformat(),
+            },
+        )
+    return plan
 
 
 def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
@@ -899,11 +1021,12 @@ def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             loopback_stop_reason = "max_retry_reached"
             break
 
-        plan = ctx["loopback_planner"].plan(
+        plan = _resolve_loopback_plan(
+            ctx=ctx,
+            image_path=current_path,
+            attempt=attempt_idx + 1,
             signal=loopback_signal,
             engine_metrics=engine_metrics,
-            thresholds_cfg=ctx["thresholds_cfg"],
-            loopback_guard_cfg=ctx.get("loopback_guard_cfg", {}),
             attempt_history=attempt_history,
         )
         logger.info(
@@ -1144,11 +1267,12 @@ async def _process_single_photo_async(
                 loopback_stop_reason = "max_retry_reached"
                 break
 
-            plan = ctx["loopback_planner"].plan(
+            plan = _resolve_loopback_plan(
+                ctx=ctx,
+                image_path=current_path,
+                attempt=attempt_idx + 1,
                 signal=loopback_signal,
                 engine_metrics=engine_metrics,
-                thresholds_cfg=ctx["thresholds_cfg"],
-                loopback_guard_cfg=ctx.get("loopback_guard_cfg", {}),
                 attempt_history=attempt_history,
             )
             logger.info(
@@ -1522,6 +1646,8 @@ def run_batch_test(
     async_per_image_timeout_s_override=None,
     async_backend_health_check_override=None,
     async_backend_health_timeout_s_override=None,
+    replay_mode_override=None,
+    replay_file_override=None,
     performance_analysis=False,
     overhead_analysis=False,
     stress_test_count=None,
@@ -1541,6 +1667,8 @@ def run_batch_test(
         async_per_image_timeout_s_override=async_per_image_timeout_s_override,
         async_backend_health_check_override=async_backend_health_check_override,
         async_backend_health_timeout_s_override=async_backend_health_timeout_s_override,
+        replay_mode_override=replay_mode_override,
+        replay_file_override=replay_file_override,
     )
     logger.info("Loaded config source: %s", config_source)
 
@@ -1788,6 +1916,8 @@ def run_batch_test_async(
     async_per_image_timeout_s_override=None,
     async_backend_health_check_override=None,
     async_backend_health_timeout_s_override=None,
+    replay_mode_override=None,
+    replay_file_override=None,
     performance_analysis=False,
     overhead_analysis=False,
     stress_test_count=None,
@@ -1814,6 +1944,8 @@ def run_batch_test_async(
         async_per_image_timeout_s_override=async_per_image_timeout_s_override,
         async_backend_health_check_override=async_backend_health_check_override,
         async_backend_health_timeout_s_override=async_backend_health_timeout_s_override,
+        replay_mode_override=replay_mode_override,
+        replay_file_override=replay_file_override,
     )
     logger.info(
         "Loaded config source: %s (async batch, concurrency=%s, parallel_metrics=%s)",
@@ -1969,6 +2101,8 @@ def run_profile_comparison(
     planner_timeout_s_override=None,
     planner_model_override=None,
     planner_require_healthy_override=None,
+    replay_mode_override=None,
+    replay_file_override=None,
 ):
     profile_outputs = []
     for profile in profiles:
@@ -1980,6 +2114,8 @@ def run_profile_comparison(
             planner_timeout_s_override=planner_timeout_s_override,
             planner_model_override=planner_model_override,
             planner_require_healthy_override=planner_require_healthy_override,
+            replay_mode_override=replay_mode_override,
+            replay_file_override=replay_file_override,
             overhead_analysis=False,
         )
         if result:
@@ -2027,6 +2163,8 @@ def run_repeatability_test(
     planner_timeout_s_override=None,
     planner_model_override=None,
     planner_require_healthy_override=None,
+    replay_mode_override=None,
+    replay_file_override=None,
 ):
     logger.info(
         "Running repeatability test: profile=%s, runs=%s",
@@ -2044,6 +2182,8 @@ def run_repeatability_test(
             planner_timeout_s_override=planner_timeout_s_override,
             planner_model_override=planner_model_override,
             planner_require_healthy_override=planner_require_healthy_override,
+            replay_mode_override=replay_mode_override,
+            replay_file_override=replay_file_override,
             overhead_analysis=False,
         )
         if run_result:
@@ -2218,7 +2358,20 @@ if __name__ == "__main__":
         default=None,
         help="Process pool size for --parallel-metrics (default: min(cpu_count, 8))",
     )
+    parser.add_argument(
+        "--replay-mode",
+        default="off",
+        choices=["off", "record", "replay"],
+        help="Deterministic replay mode for planner traces (default: off)",
+    )
+    parser.add_argument(
+        "--replay-file",
+        default=None,
+        help="Replay trace JSONL file path (required for --replay-mode record|replay)",
+    )
     args = parser.parse_args()
+    if args.replay_mode in {"record", "replay"} and not args.replay_file:
+        parser.error("--replay-file is required when --replay-mode is record or replay")
     try:
         if args.repeatability_test:
             run_repeatability_test(
@@ -2231,6 +2384,8 @@ if __name__ == "__main__":
                 planner_require_healthy_override=(
                     False if args.planner_skip_health_check else None
                 ),
+                replay_mode_override=args.replay_mode,
+                replay_file_override=args.replay_file,
             )
         elif args.compare_profiles:
             run_profile_comparison(
@@ -2242,6 +2397,8 @@ if __name__ == "__main__":
                 planner_require_healthy_override=(
                     False if args.planner_skip_health_check else None
                 ),
+                replay_mode_override=args.replay_mode,
+                replay_file_override=args.replay_file,
             )
         else:
             batch_kwargs = dict(
@@ -2259,6 +2416,8 @@ if __name__ == "__main__":
                     False if args.async_skip_backend_health_check else None
                 ),
                 async_backend_health_timeout_s_override=args.async_backend_health_timeout_s,
+                replay_mode_override=args.replay_mode,
+                replay_file_override=args.replay_file,
                 performance_analysis=args.performance_analysis,
                 overhead_analysis=args.overhead_analysis,
                 stress_test_count=100 if args.stress_test_100 else None,
