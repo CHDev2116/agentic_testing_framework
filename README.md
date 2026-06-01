@@ -1,4 +1,4 @@
-# Agentic Testing Framework: Quantized Vision QA
+# Agentic Testing Framework
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
 ![Pillow](https://img.shields.io/badge/Library-Pillow-orange.svg)
