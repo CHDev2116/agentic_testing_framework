@@ -4,7 +4,9 @@
 ![Pillow](https://img.shields.io/badge/Library-Pillow-orange.svg)
 [![CI](https://github.com/CHDev2116/agentic_testing_framework/actions/workflows/ci.yml/badge.svg)](https://github.com/CHDev2116/agentic_testing_framework/actions/workflows/ci.yml)
 
-Configuration-driven framework to evaluate image quality and make production release decisions: `GO` / `REVIEW` / `NO_GO`.
+Agentic testing framework for async LLM inference quality checks, regression evaluation, and CI-enforced reliability gates.
+
+CI status: `passing` on `main` with `ruff`, `mypy`, `pytest`, and PR coverage baseline gate checks.
 
 ## Quick Start (CLI Pipeline)
 
