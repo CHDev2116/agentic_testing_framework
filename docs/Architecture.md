@@ -11,6 +11,58 @@ In this codebase, **“Provider” = an inference backend implementation** behin
 - **Make failures observable** with stable `decision` / `code` / `msg` (and optional `confidence`).
 - **Optional resilience**: remote providers can fall back to `simulated` when configured.
 
+## Design stance: LLM is Agent, not Judge
+
+This project treats LLMs as *agents* (explorers / planners for recovery actions), not as the final authority for pass/fail.
+The determinism we need for CI comes from **explicit oracles** (physical metrics + config thresholds + arbitration rules),
+while LLM outputs are constrained, normalized, and made observable.
+
+### 1) Determinism vs probabilistic outputs (flaky decision avoidance)
+
+The risk: an LLM can output slightly different JSON, confidence, or rationale across runs, which can create flaky tests.
+The mitigation is to keep the final decision grounded in non-LLM signals:
+
+- **Physical metrics are deterministic**: brightness/sharpness computed via `src/engine/vision_math.py`.
+- **Decisions are arbitrated by a fixed rule set**: `src/eval/arbitrator.py::arbitrate_decision(...)` combines
+  gate metrics (engine) and model verdict (inference result) using a conservative conflict policy.
+- **`simulated` is the CI baseline**: providers support `fallback_to_simulated` so CI does not fail due to upstream service variance.
+- **Repeatability is measured, not assumed**: `--repeatability-test` records variance across multiple runs and stores a summary report.
+
+Design intent: treat LLM variance as a signal worth *ranking/flagging* (e.g., `REVIEW`) rather than a direct CI gate.
+
+### 2) State control in Observe–Plan–Act loops (runaway loop prevention)
+
+The risk: agentic recovery loops can oscillate or burn tokens without improving the underlying metrics.
+This repo implements "loopback hardening" in the image recovery path:
+
+- **Hard retry ceiling**: each image recovery loop is capped by `max_retry` in `src/ai_quality_agent.py`.
+- **Progress / gain checks**: retries stop when brightness/sharpness gain is insufficient
+  (e.g. `insufficient_brightness_gain`, `insufficient_sharpness_gain`).
+- **Oscillation detection**: if the loopback signal flips back (e.g. `under` → `over`), the loop breaks with an explicit stop reason.
+- **Planner action constraints**: `src/agent/loopback_planner.py` accepts only a small fixed set of actions (`brighten`, `dim`, `sharpen`, `stop`),
+  and it falls back to a deterministic `SimulatedLoopbackPlanner` when the planner output is invalid or errors.
+
+Design intent: make the recovery loop *bounded* and *auditable* by recording step-level traces (`attempt_history`).
+
+### 3) Oracle layering (who defines Ground Truth?)
+
+The risk: if an LLM writes (and "judges") assertions, tests can become superficial `expect(true)` style checks.
+This repo avoids that by layering oracles:
+
+- **Ground truth inputs** come from:
+  - `vision_math` metrics (deterministic features)
+  - `configs/*.json` thresholds and recovery guardrails
+- **Judge logic** comes from fixed code:
+  - the arbitrator (`src/eval/arbitrator.py`)
+  - the merge policy (`merge_gate_and_arbitration`) which defaults to the stricter outcome.
+- **LLM output is a contributor, not the oracle**:
+  - inference outputs are normalized by `InferenceOutput` (`src/models/contracts.py`)
+  - planner rationales are used for traceability, but the *stop/go* decision remains rule-based.
+
+What is still intentionally deferred:
+- A "Critique Agent" that scores assertion strength / schema coverage is listed as a roadmap item, not a current gate.
+- Deterministic replay (VCR-style) is also roadmap (records planner prompts/responses to eliminate LLM variance).
+
 ## Pipeline entry points (two tracks)
 
 **Primary — batch image QA (what the README quick start runs)**
