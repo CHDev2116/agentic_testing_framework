@@ -55,6 +55,30 @@ jobs:
         run: |
           python scripts/check_coverage_baseline.py --coverage-xml coverage.xml --baseline-file .ci/coverage_baseline.txt
 
+      - name: Replay smoke (deterministic)
+        run: bash scripts/ci_replay_smoke.sh
+
+      - name: Agent smoke (simulated) + KPI gate
+        run: |
+          PYTHONPATH=src python src/ai_quality_agent.py --profile dev \
+            --inference-backend simulated \
+            --loopback-planner simulated \
+            --planner-skip-health-check
+          python scripts/check_quality_kpis.py --enforce \
+            --max-fallback-ratio 0.01 \
+            --max-review-rate 1.0
+
+      - name: Repeatability KPI smoke
+        run: |
+          PYTHONPATH=src python src/ai_quality_agent.py --repeatability-test dev \
+            --repeatability-runs 3 \
+            --inference-backend simulated \
+            --loopback-planner simulated \
+            --planner-skip-health-check
+          python scripts/check_quality_kpis.py --enforce \
+            --max-pass-rate-variance 0.05 \
+            --max-image-score-variance 0.05
+
   generate-reports:
     runs-on: ubuntu-latest
     needs: [lint-type-test]

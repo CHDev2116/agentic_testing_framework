@@ -49,6 +49,7 @@ from util.replay_trace import (
     get_replay_step,
     load_replay_steps,
     planner_input_hash,
+    replay_image_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -846,6 +847,37 @@ def _build_photo_process_context(config: Dict[str, Any], agent: QuantizedVisionA
     }
 
 
+def _stable_attempt_history_for_replay(
+    attempt_history: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Drop volatile fields so record/replay hashes stay stable across runs."""
+    stable_keys = (
+        "attempt",
+        "image_path",
+        "loopback_signal",
+        "action",
+        "release",
+        "avg_brightness",
+        "sharpness",
+        "model_decision",
+        "error_code",
+        "planner_fallback_used",
+        "planner_backend",
+    )
+    stable_rows: List[Dict[str, Any]] = []
+    for item in attempt_history:
+        row: Dict[str, Any] = {}
+        for key in stable_keys:
+            if key not in item:
+                continue
+            value = item[key]
+            if key == "image_path":
+                value = replay_image_key(str(value))
+            row[key] = value
+        stable_rows.append(row)
+    return stable_rows
+
+
 def _build_planner_trace_payload(
     *,
     image_path: str,
@@ -857,13 +889,13 @@ def _build_planner_trace_payload(
     attempt_history: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     return {
-        "image_path": str(image_path),
+        "image_path": replay_image_key(image_path),
         "attempt": int(attempt),
         "signal": str(signal),
         "engine_metrics": engine_metrics,
         "thresholds_cfg": thresholds_cfg,
         "loopback_guard_cfg": loopback_guard_cfg,
-        "attempt_history": attempt_history,
+        "attempt_history": _stable_attempt_history_for_replay(attempt_history),
     }
 
 
@@ -890,7 +922,7 @@ def _resolve_loopback_plan(
     if replay_mode == "replay":
         step = get_replay_step(
             ctx["replay_index"],
-            image_path=image_path,
+            image_path=replay_image_key(image_path),
             attempt=attempt,
             expected_planner_input_hash=trace_hash,
         )
@@ -916,7 +948,7 @@ def _resolve_loopback_plan(
         append_replay_step(
             ctx["replay_file"],
             {
-                "image_path": str(image_path),
+                "image_path": replay_image_key(image_path),
                 "attempt": int(attempt),
                 "metrics_before": {
                     "avg_brightness": float(engine_metrics.get("avg_brightness", 0.0)),
@@ -1433,6 +1465,47 @@ def benchmark_monitor_overhead(samples=5, sleep_s=0.2):
     }
 
 
+def _compute_batch_quality_kpis(
+    batch_report: Dict[str, Any],
+    per_image_releases: List[str],
+    review_breakdown: Dict[str, int],
+) -> Dict[str, Any]:
+    """Aggregate automation KPIs for batch summary and CI gates."""
+    total = len(batch_report.get("results", []))
+    if total == 0:
+        return {
+            "fallback_ratio": 0.0,
+            "review_rate": 0.0,
+            "review_count": 0,
+            "review_breakdown": {},
+            "inference_fallback_count": 0,
+            "loopback_fallback_count": 0,
+        }
+
+    inference_fallback_count = 0
+    loopback_fallback_count = 0
+    for row in batch_report["results"]:
+        decision = row.get("decision")
+        if isinstance(decision, dict):
+            backend = str(decision.get("backend", ""))
+            if "->simulated" in backend:
+                inference_fallback_count += 1
+        loopback = row.get("loopback")
+        if isinstance(loopback, dict) and bool(loopback.get("fallback_used")):
+            loopback_fallback_count += 1
+
+    review_count = sum(1 for release in per_image_releases if release == "REVIEW")
+    fallback_events = inference_fallback_count + loopback_fallback_count
+    return {
+        "fallback_ratio": round(fallback_events / max(total, 1), 4),
+        "inference_fallback_count": inference_fallback_count,
+        "loopback_fallback_count": loopback_fallback_count,
+        "review_rate": round(review_count / total, 4),
+        "review_count": review_count,
+        "review_breakdown": dict(review_breakdown),
+    }
+
+
 def _finalize_batch_report(
     *,
     batch_report: Dict[str, Any],
@@ -1469,7 +1542,8 @@ def _finalize_batch_report(
     auto_tag_conflicts = bool(eval_settings.get("auto_tag_conflicts", True))
     thresholds_cfg = config.get("thresholds", {})
 
-    per_image_releases = []
+    per_image_releases: List[str] = []
+    review_breakdown: Dict[str, int] = {}
     for row in batch_report["results"]:
         if row.get("status") != "SUCCESS":
             per_image_releases.append("NO_GO")
@@ -1492,6 +1566,10 @@ def _finalize_batch_report(
             engine_metrics, model_inference, thresholds_cfg
         )
         per_image_releases.append(release)
+        if release == "REVIEW":
+            review_breakdown[conflict_enum.value] = (
+                review_breakdown.get(conflict_enum.value, 0) + 1
+            )
         if auto_tag_conflicts:
             raw_c = ai_result.get("confidence")
             conf_val = float(raw_c) if raw_c is not None else None
@@ -1550,6 +1628,9 @@ def _finalize_batch_report(
         )
     logger.info("%s", "=" * 55)
 
+    quality_kpis = _compute_batch_quality_kpis(
+        batch_report, per_image_releases, review_breakdown
+    )
     batch_report["summary"] = {
         "total_tests": total,
         "success_count": success_count,
@@ -1560,6 +1641,7 @@ def _finalize_batch_report(
         "release_decision_gate": gate_decision,
         "release_decision_arbitration": arbitration_batch,
         "decision_reason": decision_reason,
+        "quality_kpis": quality_kpis,
     }
     if batch_report.get("execution_mode") == "async":
         batch_report["summary"]["async_timeout_count"] = int(

@@ -1,0 +1,6 @@
+{
+  "max_fallback_ratio": 0.01,
+  "max_review_rate": 1.0,
+  "max_pass_rate_variance": 0.05,
+  "max_image_score_variance": 0.05
+}

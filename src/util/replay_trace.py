@@ -1,7 +1,13 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+
+def replay_image_key(image_path: str) -> str:
+    """Stable per-file key for replay traces (portable across machines)."""
+    return os.path.basename(str(image_path))
 
 
 class ReplayTraceError(ValueError):
@@ -57,7 +63,7 @@ def build_replay_index(steps: List[Dict[str, Any]]) -> Dict[Tuple[str, int], Dic
     """
     index: Dict[Tuple[str, int], Dict[str, Any]] = {}
     for step in steps:
-        key = (str(step["image_path"]), int(step["attempt"]))
+        key = (replay_image_key(str(step["image_path"])), int(step["attempt"]))
         if key in index:
             raise ReplayTraceError(
                 f"Duplicate replay step for image_path={key[0]!r}, attempt={key[1]}."
@@ -76,7 +82,7 @@ def get_replay_step(
     """
     Fetch replay step and ensure planner input hash matches expected runtime hash.
     """
-    key = (str(image_path), int(attempt))
+    key = (replay_image_key(image_path), int(attempt))
     step = replay_index.get(key)
     if step is None:
         raise ReplayTraceError(
