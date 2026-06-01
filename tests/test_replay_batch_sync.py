@@ -3,7 +3,6 @@
 import json
 from pathlib import Path
 
-import pytest
 from PIL import Image
 
 import ai_quality_agent as qa
