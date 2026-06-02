@@ -1,0 +1,9 @@
+{
+  "max_fallback_ratio": 0.01,
+  "max_review_rate": 1.0,
+  "max_json_repair_exhausted_count": 0,
+  "max_json_repair_exhausted_ratio": 0.0,
+  "max_semantic_assert_fail_count": 0,
+  "max_semantic_code_mismatch_count": 0,
+  "max_strict_contract_violation_count": 0
+}

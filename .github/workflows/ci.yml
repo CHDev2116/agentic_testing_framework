@@ -50,6 +50,17 @@ jobs:
         run: |
           PYTHONPATH=src pytest
 
+      - name: Oracle historical regression
+        id: oracle_regression
+        run: |
+          PYTHONPATH=src pytest tests/test_oracle_regression.py -q
+
+      - name: Oracle semantic changelog (job summary)
+        if: always()
+        env:
+          CI_ORACLE_SNAPSHOT_ENFORCE: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+        run: bash scripts/ci_oracle_semantic_summary.sh
+
       - name: Coverage baseline gate (PR only)
         if: github.event_name == 'pull_request'
         run: |
@@ -65,8 +76,7 @@ jobs:
             --loopback-planner simulated \
             --planner-skip-health-check
           python scripts/check_quality_kpis.py --enforce \
-            --max-fallback-ratio 0.01 \
-            --max-review-rate 1.0
+            --thresholds-file .ci/quality_kpi_thresholds.json
 
       - name: Repeatability KPI smoke
         run: |
@@ -76,8 +86,7 @@ jobs:
             --loopback-planner simulated \
             --planner-skip-health-check
           python scripts/check_quality_kpis.py --enforce \
-            --max-pass-rate-variance 0.05 \
-            --max-image-score-variance 0.05
+            --thresholds-file .ci/quality_kpi_thresholds.json
 
   generate-reports:
     runs-on: ubuntu-latest

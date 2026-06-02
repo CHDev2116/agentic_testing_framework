@@ -30,6 +30,7 @@ from agent.loopback_planner import (
 from engine.image_processor import ImageProcessor
 from engine.vision_math import calculate_metrics
 from eval.arbitrator import (
+    DecisionConflict,
     aggregate_batch_decisions,
     arbitrate_decision,
     merge_gate_and_arbitration,
@@ -43,6 +44,20 @@ from models.async_inference import predict_quality_async
 from models.contracts import AgentInferenceOutput, AgentStep
 from models.contracts import LoopbackPlan
 from models.inference_adapter import build_inference_engine
+from eval.llm_judge import ReviewJudgeBudget, judge_review_row
+from models.semantic_asserts import (
+    SEMANTIC_ASSERT_MISMATCH,
+    arbitrate_with_semantic_asserts,
+    contract_block_from_outcome,
+    evaluate_semantic_asserts,
+)
+from models.contract_release_policy import (
+    ContractReleaseSettings,
+    apply_unstable_repair_release_policy,
+    contract_meta_from_ai_result,
+)
+from models.semantic_eval_settings import LLMJudgeSettings, SemanticEvalSettings
+from util.adaptive_backoff import AdaptiveBackoffSettings
 from util.replay_trace import (
     append_replay_step,
     build_replay_index,
@@ -369,6 +384,11 @@ class QuantizedVisionAgent:
         self.config = config
         self.model_info = config["model_settings"]
         self.inference_engine = build_inference_engine(config)
+        setattr(
+            self.inference_engine,
+            "adaptive_backoff_settings",
+            AdaptiveBackoffSettings.from_config(config),
+        )
         self.metrics_pool = metrics_pool
         self.oom_probability = float(config.get("runtime", {}).get("oom_probability", 0.0))
         logger.info(
@@ -449,6 +469,10 @@ class QuantizedVisionAgent:
             latency,
         )
         return metrics, ai_result, latency
+
+
+def _semantic_asserts_enabled(config: Dict[str, Any]) -> bool:
+    return SemanticEvalSettings.from_config(config).enabled
 
 
 def save_batch_report(report_data, output_folder):
@@ -844,6 +868,7 @@ def _build_photo_process_context(config: Dict[str, Any], agent: QuantizedVisionA
         "brighten_factor": float(loopback_guard_cfg.get("brighten_factor", 1.2)),
         "dim_factor": float(loopback_guard_cfg.get("dim_factor", 0.85)),
         "overexposure_stop_ratio": float(loopback_guard_cfg.get("overexposure_stop_ratio", 0.95)),
+        "semantic_eval_settings": SemanticEvalSettings.from_config(config),
     }
 
 
@@ -1021,19 +1046,19 @@ def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
             "avg_brightness": metrics.get("avg_brightness", metrics.get("brightness", 0.0)),
             "sharpness": metrics.get("sharpness", 0.0),
         }
-        model_inference = {
-            "decision": ai_result.get("decision"),
-            "status": ai_result.get("decision"),
-            "confidence": ai_result.get("confidence"),
-        }
-        release_decision, _ = arbitrate_decision(
-            engine_metrics, model_inference, ctx["thresholds_cfg"]
+        release_decision, _, sem_outcome = arbitrate_with_semantic_asserts(
+            engine_metrics,
+            ai_result,
+            metrics,
+            ctx["thresholds_cfg"],
+            settings=ctx["semantic_eval_settings"],
         )
         loopback_signal = classify_loopback_signal(ai_result)
         attempt_history.append({
             "attempt": attempt_idx + 1,
             "image_path": current_path,
             "model_decision": ai_result.get("decision"),
+            "semantic_errors": list(sem_outcome.semantic_errors),
             "error_code": ai_result.get("code"),
             "release": release_decision,
             "loopback_signal": loopback_signal,
@@ -1154,11 +1179,19 @@ def _process_single_photo(path: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     model_latency_ms = float(round(final_latency, 2))
     framework_wall_ms = max(0.0, image_wall_ms - model_latency_ms)
 
+    contract_block: Dict[str, Any] = {}
+    if isinstance(final_metrics, dict) and isinstance(final_ai_result, dict):
+        sem_outcome = evaluate_semantic_asserts(
+            final_ai_result, final_metrics, ctx["thresholds_cfg"]
+        )
+        contract_block = contract_block_from_outcome(sem_outcome)
+
     return {
         "row": {
             "file": file_name,
             "metrics": final_metrics,
             "decision": final_ai_result,
+            "contract": contract_block,
             "inference_output": _build_agent_inference_output(
                 image_path=path,
                 attempt_history=attempt_history,
@@ -1267,19 +1300,19 @@ async def _process_single_photo_async(
                 "avg_brightness": metrics.get("avg_brightness", metrics.get("brightness", 0.0)),
                 "sharpness": metrics.get("sharpness", 0.0),
             }
-            model_inference = {
-                "decision": ai_result.get("decision"),
-                "status": ai_result.get("decision"),
-                "confidence": ai_result.get("confidence"),
-            }
-            release_decision, _ = arbitrate_decision(
-                engine_metrics, model_inference, ctx["thresholds_cfg"]
+            release_decision, _, sem_outcome = arbitrate_with_semantic_asserts(
+                engine_metrics,
+                ai_result,
+                metrics,
+                ctx["thresholds_cfg"],
+                settings=ctx["semantic_eval_settings"],
             )
             loopback_signal = classify_loopback_signal(ai_result)
             attempt_history.append({
                 "attempt": attempt_idx + 1,
                 "image_path": current_path,
                 "model_decision": ai_result.get("decision"),
+                "semantic_errors": list(sem_outcome.semantic_errors),
                 "error_code": ai_result.get("code"),
                 "release": release_decision,
                 "loopback_signal": loopback_signal,
@@ -1383,11 +1416,19 @@ async def _process_single_photo_async(
         model_latency_ms = float(round(final_latency, 2))
         framework_wall_ms = max(0.0, image_wall_ms - model_latency_ms)
 
+        contract_block_async: Dict[str, Any] = {}
+        if isinstance(final_metrics, dict) and isinstance(final_ai_result, dict):
+            sem_outcome_row = evaluate_semantic_asserts(
+                final_ai_result, final_metrics, ctx["thresholds_cfg"]
+            )
+            contract_block_async = contract_block_from_outcome(sem_outcome_row)
+
         return {
             "row": {
                 "file": file_name,
                 "metrics": final_metrics,
                 "decision": final_ai_result,
+                "contract": contract_block_async,
                 "inference_output": _build_agent_inference_output(
                     image_path=path,
                     attempt_history=attempt_history,
@@ -1480,16 +1521,43 @@ def _compute_batch_quality_kpis(
             "review_breakdown": {},
             "inference_fallback_count": 0,
             "loopback_fallback_count": 0,
+            "json_repair_attempts_total": 0,
+            "json_repair_exhausted_count": 0,
+            "unstable_repair_count": 0,
+            "semantic_assert_fail_count": 0,
+            "semantic_code_mismatch_count": 0,
+            "strict_contract_violation_count": 0,
         }
 
     inference_fallback_count = 0
     loopback_fallback_count = 0
+    json_repair_attempts_total = 0
+    json_repair_exhausted_count = 0
+    unstable_repair_count = 0
+    semantic_assert_fail_count = 0
+    semantic_code_mismatch_count = 0
+    strict_contract_violation_count = 0
     for row in batch_report["results"]:
         decision = row.get("decision")
         if isinstance(decision, dict):
             backend = str(decision.get("backend", ""))
             if "->simulated" in backend:
                 inference_fallback_count += 1
+            contract_meta = decision.get("contract_meta")
+            if isinstance(contract_meta, dict):
+                json_repair_attempts_total += int(contract_meta.get("repair_attempts", 0))
+                if contract_meta.get("unstable_repair"):
+                    unstable_repair_count += 1
+                if contract_meta.get("strict_fallback_blocked"):
+                    strict_contract_violation_count += 1
+            msg = str(decision.get("msg", ""))
+            if decision.get("code") == "ERR_MODEL_RESPONSE_422" and "repair_exhausted" in msg:
+                json_repair_exhausted_count += 1
+        contract = row.get("contract")
+        if isinstance(contract, dict) and contract.get("semantic_errors"):
+            semantic_assert_fail_count += 1
+            if contract.get("code_mismatch"):
+                semantic_code_mismatch_count += 1
         loopback = row.get("loopback")
         if isinstance(loopback, dict) and bool(loopback.get("fallback_used")):
             loopback_fallback_count += 1
@@ -1503,6 +1571,12 @@ def _compute_batch_quality_kpis(
         "review_rate": round(review_count / total, 4),
         "review_count": review_count,
         "review_breakdown": dict(review_breakdown),
+        "json_repair_attempts_total": json_repair_attempts_total,
+        "json_repair_exhausted_count": json_repair_exhausted_count,
+        "unstable_repair_count": unstable_repair_count,
+        "semantic_assert_fail_count": semantic_assert_fail_count,
+        "semantic_code_mismatch_count": semantic_code_mismatch_count,
+        "strict_contract_violation_count": strict_contract_violation_count,
     }
 
 
@@ -1541,6 +1615,17 @@ def _finalize_batch_report(
     conflict_strategy = eval_settings.get("conflict_strategy", "conservative")
     auto_tag_conflicts = bool(eval_settings.get("auto_tag_conflicts", True))
     thresholds_cfg = config.get("thresholds", {})
+    semantic_settings = SemanticEvalSettings.from_config(config)
+    contract_release_settings = ContractReleaseSettings.from_config(config)
+    judge_settings = LLMJudgeSettings.from_config(config)
+    judge_cfg = (
+        eval_settings.get("llm_judge", {})
+        if isinstance(eval_settings.get("llm_judge"), dict)
+        else {}
+    )
+    judge_budget = ReviewJudgeBudget(judge_settings.max_calls_per_batch)
+    llm_judge_calls = 0
+    llm_judge_overrides = 0
 
     per_image_releases: List[str] = []
     review_breakdown: Dict[str, int] = {}
@@ -1557,27 +1642,77 @@ def _finalize_batch_report(
             "avg_brightness": metrics.get("avg_brightness", metrics.get("brightness", 0.0)),
             "sharpness": metrics.get("sharpness", 0.0),
         }
-        model_inference = {
-            "decision": ai_result.get("decision"),
-            "status": ai_result.get("decision"),
-            "confidence": ai_result.get("confidence"),
-        }
-        release, conflict_enum = arbitrate_decision(
-            engine_metrics, model_inference, thresholds_cfg
+        if semantic_settings.enabled:
+            release, conflict_enum, sem_outcome = arbitrate_with_semantic_asserts(
+                engine_metrics,
+                ai_result,
+                metrics,
+                thresholds_cfg,
+                settings=semantic_settings,
+            )
+            row["contract"] = contract_block_from_outcome(sem_outcome)
+        else:
+            sem_outcome = None
+            model_inference = {
+                "decision": ai_result.get("decision"),
+                "status": ai_result.get("decision"),
+                "confidence": ai_result.get("confidence"),
+            }
+            release, conflict_enum = arbitrate_decision(
+                engine_metrics, model_inference, thresholds_cfg
+            )
+        release, conflict_enum = apply_unstable_repair_release_policy(
+            release,
+            conflict_enum,
+            contract_meta_from_ai_result(ai_result),
+            contract_release_settings,
         )
+        original_release = release
+        if release == "REVIEW" and judge_settings.enabled:
+            verdict = judge_review_row(
+                row,
+                settings=judge_settings,
+                judge_cfg=judge_cfg,
+                budget=judge_budget,
+            )
+            if verdict is not None:
+                llm_judge_calls += 1
+                row["llm_judge"] = verdict.to_dict()
+                if verdict.verdict in {"GO", "NO_GO"} and verdict.verdict != original_release:
+                    llm_judge_overrides += 1
+                    release = verdict.verdict
+                    conflict_enum = DecisionConflict.LLM_JUDGE_OVERRIDE
         per_image_releases.append(release)
         if release == "REVIEW":
-            review_breakdown[conflict_enum.value] = (
-                review_breakdown.get(conflict_enum.value, 0) + 1
+            if sem_outcome is not None and sem_outcome.override_applied:
+                review_breakdown[SEMANTIC_ASSERT_MISMATCH] = (
+                    review_breakdown.get(SEMANTIC_ASSERT_MISMATCH, 0) + 1
+                )
+            else:
+                review_breakdown[conflict_enum.value] = (
+                    review_breakdown.get(conflict_enum.value, 0) + 1
+                )
+        elif (
+            sem_outcome is not None
+            and sem_outcome.override_applied
+            and sem_outcome.semantic_errors
+        ):
+            review_breakdown[SEMANTIC_ASSERT_MISMATCH] = (
+                review_breakdown.get(SEMANTIC_ASSERT_MISMATCH, 0) + 1
             )
         if auto_tag_conflicts:
             raw_c = ai_result.get("confidence")
             conf_val = float(raw_c) if raw_c is not None else None
-            row["arbitration"] = {
+            arbitration_tag: Dict[str, Any] = {
                 "release_decision": release,
                 "conflict": conflict_enum.value,
                 **({"model_confidence": conf_val} if conf_val is not None else {}),
             }
+            if sem_outcome is not None:
+                arbitration_tag["semantic_assert_override"] = sem_outcome.override_applied
+                if sem_outcome.semantic_errors:
+                    arbitration_tag["semantic_errors"] = list(sem_outcome.semantic_errors)
+            row["arbitration"] = arbitration_tag
         if release in {"REVIEW", "NO_GO"}:
             failure_id = f"{batch_report['batch_id']}::{row.get('file', 'unknown')}::{release}"
             document = failure_memory_store.build_document(row.get("file", "unknown"), ai_result)
@@ -1631,6 +1766,8 @@ def _finalize_batch_report(
     quality_kpis = _compute_batch_quality_kpis(
         batch_report, per_image_releases, review_breakdown
     )
+    quality_kpis["llm_judge_calls"] = llm_judge_calls
+    quality_kpis["llm_judge_overrides"] = llm_judge_overrides
     batch_report["summary"] = {
         "total_tests": total,
         "success_count": success_count,

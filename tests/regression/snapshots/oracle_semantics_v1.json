@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "label": "oracle_semantics_7213806",
+  "recorded_at": "2026-06-02T01:33:24.422172+00:00",
+  "cases_path": "tests/regression/oracle_cases.jsonl",
+  "oracle_rules_tag": "7213806",
+  "case_count": 17,
+  "cases": {
+    "hist-001-underexposed-consistent-fail": {
+      "release": "NO_GO",
+      "conflict": "Consistent Fail",
+      "semantic_errors": [],
+      "override_applied": false,
+      "description": "Dark image; model agrees Under-exposed (classic ERR_LIGHT_DARK)"
+    },
+    "hist-002-physical-ok-blurry-high-conf-review": {
+      "release": "REVIEW",
+      "conflict": "Engine OK; model negative verdict with high confidence (review)",
+      "semantic_errors": [],
+      "override_applied": false,
+      "description": "Metrics pass; model Blurry with high confidence → REVIEW"
+    },
+    "hist-003-physical-ok-blurry-low-conf-go": {
+      "release": "GO",
+      "conflict": "Engine OK; model negative verdict with low confidence (accept GO)",
+      "semantic_errors": [],
+      "override_applied": false,
+      "description": "Metrics pass; model Blurry with low confidence → GO (accept)"
+    },
+    "hist-004-all-pass-optimal": {
+      "release": "GO",
+      "conflict": "Consistent Pass",
+      "semantic_errors": [],
+      "override_applied": false,
+      "description": "Healthy metrics + Optimal model → GO"
+    },
+    "hist-005-overoptimistic-raw-arbitrator": {
+      "release": "NO_GO",
+      "conflict": "Engine Fails but Model OK (Potential Over-optimism)",
+      "semantic_errors": [],
+      "override_applied": false,
+      "description": "Dark image but model Optimal (no semantic) → PHYSICAL_FAIL_MODEL_OK"
+    },
+    "hist-006-overoptimistic-semantic-corrected": {
+      "release": "NO_GO",
+      "conflict": "Consistent Fail",
+      "semantic_errors": [
+        "semantic: Optimal contradicts metrics (expected 'Under-exposed' from brightness/sharpness)"
+      ],
+      "override_applied": true,
+      "description": "Dark + Optimal label; semantic assert rewrites arbitration input"
+    },
+    "hist-007-overexposed-semantic": {
+      "release": "NO_GO",
+      "conflict": "Consistent Fail",
+      "semantic_errors": [
+        "semantic: Optimal contradicts metrics (expected 'Over-exposed' from brightness/sharpness)"
+      ],
+      "override_applied": true,
+      "description": "Over-bright + Optimal → semantic override → NO_GO"
+    },
+    "hist-008-blurry-metrics-semantic": {
+      "release": "NO_GO",
+      "conflict": "Consistent Fail",
+      "semantic_errors": [
+        "semantic: Optimal contradicts metrics (expected 'Blurry' from brightness/sharpness)"
+      ],
+      "override_applied": true,
+      "description": "Valid lighting but low sharpness + Optimal → semantic Blurry"
+    },
+    "hist-009-invalid-decision-label": {
+      "release": "NO_GO",
+      "conflict": "Invalid model label (semantic policy)",
+      "semantic_errors": [
+        "semantic: decision 'LoginSuccess' not in allowed set (Blurry, Error, Optimal, Over-exposed, Under-exposed)"
+      ],
+      "override_applied": true,
+      "description": "Disallowed decision → semantic policy NO_GO"
+    },
+    "hist-010-model-error-code": {
+      "release": "NO_GO",
+      "conflict": "Inference error verdict (semantic policy)",
+      "semantic_errors": [
+        "semantic: inference error verdict (model Error or ERR_MODEL_* code)"
+      ],
+      "override_applied": false,
+      "description": "Inference Error / repair_exhausted → semantic policy NO_GO"
+    },
+    "hist-011-confidence-out-of-range": {
+      "release": "NO_GO",
+      "conflict": "Consistent Fail",
+      "semantic_errors": [
+        "semantic: confidence must be in [0, 1]"
+      ],
+      "override_applied": false,
+      "description": "Confidence >1 stripped; Blurry verdict on soft metrics"
+    },
+    "hist-012-bright-dark-borderline-model-over": {
+      "release": "NO_GO",
+      "conflict": "Consistent Fail",
+      "semantic_errors": [],
+      "override_applied": false,
+      "description": "Slightly under brightness + model Over-exposed"
+    },
+    "hist-013-optimal-with-blur-code": {
+      "release": "GO",
+      "conflict": "Consistent Pass",
+      "semantic_errors": [
+        "semantic: decision 'Optimal' expects code in {SUCCESS_200}, got 'ERR_OPTIC_SHRP_001'"
+      ],
+      "override_applied": false,
+      "description": "Optimal label paired with blur error code (false pass signature)"
+    },
+    "hist-014-blurry-with-success-code": {
+      "release": "REVIEW",
+      "conflict": "Engine OK; model negative verdict with high confidence (review)",
+      "semantic_errors": [
+        "semantic: decision 'Blurry' expects code in {ERR_OPTIC_SHRP_001}, got 'SUCCESS_200'"
+      ],
+      "override_applied": false,
+      "description": "Blurry label paired with SUCCESS_200 (schema-valid lie)"
+    },
+    "hist-015-error-with-success-code": {
+      "release": "NO_GO",
+      "conflict": "Inference error verdict (semantic policy)",
+      "semantic_errors": [
+        "semantic: decision Error must not use SUCCESS_200",
+        "semantic: inference error verdict (model Error or ERR_MODEL_* code)"
+      ],
+      "override_applied": false,
+      "description": "Error decision must not carry SUCCESS_200 → policy NO_GO"
+    },
+    "hist-016-confidence-violation-review": {
+      "release": "REVIEW",
+      "conflict": "Confidence out of range (semantic policy)",
+      "semantic_errors": [
+        "semantic: confidence must be in [0, 1]"
+      ],
+      "override_applied": false,
+      "description": "Confidence >1 on healthy metrics → REVIEW (S3 policy)"
+    },
+    "hist-017-unstable-repair-review": {
+      "release": "REVIEW",
+      "conflict": "JSON repair semantic drift (unstable repair audit)",
+      "semantic_errors": [],
+      "override_applied": false,
+      "description": "[IN] Optimal verdict but repair_audit unstable → REVIEW (contract policy)"
+    }
+  }
+}

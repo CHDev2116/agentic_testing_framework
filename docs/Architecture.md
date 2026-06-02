@@ -61,7 +61,11 @@ This repo avoids that by layering oracles:
 
 What is still intentionally deferred:
 - A "Critique Agent" that scores assertion strength / schema coverage is listed as a roadmap item, not a current gate.
-- Deterministic replay (VCR-style) is also roadmap (records planner prompts/responses to eliminate LLM variance).
+- LLM-as-judge for disputed `REVIEW` rows (P2.1) is not a CI gate.
+
+Shipped since the original roadmap note:
+- **Deterministic replay** for loopback planner steps (`--replay-mode`, JSONL trace, CI replay smoke).
+- **Historical oracle regression** (`tests/regression/oracle_cases.jsonl`, `tests/test_oracle_regression.py`).
 
 ## Pipeline entry points (two tracks)
 
@@ -206,6 +210,74 @@ flowchart LR
 ```
 
 Important: **physical metrics checks** also exist outside the provider layer (engine thresholds + arbitration). Providers should not assume they are the only gate.
+
+## Contract hardening (format + semantics)
+
+Two layers sit between raw LLM text and batch release decisions:
+
+### P1 — JSON self-repair (inference backends)
+
+- Config: `model_settings.inference.contract` (`max_json_repair_attempts`, `strict_contract`, `repair_on_empty_dict`).
+- Default **`max_json_repair_attempts: 0`** so CI/simulated runs stay deterministic without extra HTTP.
+- When repair is enabled (`>= 1`), `ollama_vision` / `llama_cpp` validate parsed JSON via `contract_validator.py`, issue a repair prompt on failure, and attach `contract_meta.repair_attempts` on the inference dict.
+- Exhausted repair → `code=ERR_MODEL_RESPONSE_422`, `msg` contains `repair_exhausted`. With `strict_contract=true`, silent fallback to `simulated` is blocked and `contract_meta.strict_fallback_blocked` is set.
+- **`replay_mode=replay`** forces repair off; recorded planner/inference paths remain authoritative.
+
+### P2 — Semantic asserts (batch / loopback)
+
+- Module: `src/models/semantic_asserts.py` (`evaluate_semantic_asserts`, `arbitrate_with_semantic_asserts`).
+- Runs on each image **before** `arbitrate_decision`; does **not** mutate the stored model `decision` string.
+- Failures are recorded on the row: `contract.semantic_errors` (list of strings).
+- When asserts override the label used for arbitration (e.g. model said `Optimal` but metrics imply `Under-exposed`), `review_breakdown` can increment **`SEMANTIC_ASSERT_MISMATCH`** in addition to standard `DecisionConflict` buckets.
+- Disable via `eval_settings.semantic_asserts_enabled: false` (default **true**).
+
+### Batch observability (`summary.quality_kpis`)
+
+| KPI | Meaning |
+|-----|---------|
+| `json_repair_attempts_total` | Sum of `contract_meta.repair_attempts` across rows |
+| `json_repair_exhausted_count` | Rows with `repair_exhausted` in inference `msg` |
+| `semantic_assert_fail_count` | Rows with non-empty `contract.semantic_errors` |
+| `semantic_code_mismatch_count` | Rows where `contract.code_mismatch` is true (decision/code pairing violated) |
+| `strict_contract_violation_count` | Rows where strict mode blocked post-repair simulated fallback |
+| `review_breakdown` | Per-conflict counts; includes `SEMANTIC_ASSERT_MISMATCH` when applicable |
+
+CI enforces thresholds from `.ci/quality_kpi_thresholds.json` via `scripts/check_quality_kpis.py` after simulated batch smoke. Replay smoke uses stricter `.ci/replay_quality_kpi_thresholds.json` (`max_semantic_assert_fail_count=0`, `max_semantic_code_mismatch_count=0`).
+
+### Historical regression (oracle corpus)
+
+Frozen cases in `tests/regression/oracle_cases.jsonl` lock `(metrics, model decision) → release / conflict` semantics. Any change to arbitrator thresholds or semantic asserts must keep this suite green or update the corpus intentionally. See `tests/regression/README.md`.
+
+**Versioned semantics snapshots** (`tests/regression/snapshots/`, `scripts/diff_oracle_semantics.py`) record rule outputs at a tagged commit so PRs can attach a **semantic changelog** (release/conflict drift), not only pass/fail. See `docs/RegressionVersioning.md`.
+
+**Failure triage** for REVIEW/NO_GO rows: `docs/FailureTaxonomy.md` (DQ / LD / IN).
+
+**Inference cache (design)** for large corpora without multithreading: `docs/InferenceResultCache.md`.
+
+### Semantic policy layer (`eval_settings.semantic_policy`)
+
+| Policy | Default | Effect |
+|--------|---------|--------|
+| `invalid_label_release` | `NO_GO` | Disallowed `decision` strings do not yield lenient GO |
+| `confidence_violation_policy` | `review` | Out-of-range confidence → `REVIEW` when metrics OK |
+| `inference_error_release` | `NO_GO` | `Error` / `ERR_MODEL_*` inference rows → `NO_GO` |
+
+### P2.1 LLM judge (REVIEW tie-break)
+
+Config: `eval_settings.llm_judge` (`enabled`, `max_calls_per_batch`, `mode: simulated|ollama`).  
+When enabled, rows with `REVIEW` may receive a second opinion; overrides are tagged with `DecisionConflict.LLM_JUDGE_OVERRIDE` and `row.llm_judge`.
+
+### Planner JSON repair
+
+`runtime.loopback_planner.contract.max_json_repair_attempts` enables repair prompts for LLM planner `{action, rationale}` JSON (see `src/agent/planner_contract.py`).
+
+### Adaptive backoff
+
+`runtime.adaptive_backoff` enables retry with backoff on 429/5xx for async inference HTTP (see `docs/AdaptiveBackoff.md`).
+
+### JSON repair audit (`repair_audit`)
+
+When `contract.max_json_repair_attempts > 0`, `contract_meta.repair_audit` records each round’s prompt/output snapshots and flags `unstable_repair` when decisions flip across repair (e.g. `Under-exposed -> Optimal`). See `docs/RepairAudit.md` and `tests/test_repair_stability_gate.py`.
 
 ## Performance monitoring (`src/util/monitor_performance.py`)
 

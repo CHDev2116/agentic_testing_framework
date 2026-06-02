@@ -7,13 +7,13 @@ CPU-only simulated inference runs in a thread pool via asyncio.to_thread.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from typing import Any, Dict
 
 import httpx
 
+from models.contract_repair import run_contract_inference_loop_async
 from models.inference_adapter import (
     LlamaCppInferenceEngine,
     MockAPIInferenceEngine,
@@ -21,8 +21,46 @@ from models.inference_adapter import (
     SimulatedInferenceEngine,
 )
 from models.contracts import InferenceOutput
+from util.adaptive_backoff import (
+    AdaptiveBackoffSettings,
+    response_indicates_pressure,
+    sleep_backoff,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _backoff_settings(engine: Any) -> AdaptiveBackoffSettings:
+    settings = getattr(engine, "adaptive_backoff_settings", None)
+    if isinstance(settings, AdaptiveBackoffSettings):
+        return settings
+    return AdaptiveBackoffSettings()
+
+
+async def _post_json_with_backoff(
+    engine: Any,
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    payload: Dict[str, Any],
+    timeout: httpx.Timeout,
+) -> httpx.Response:
+    settings = _backoff_settings(engine)
+    response: httpx.Response | None = None
+    attempts = settings.max_retries + 1 if settings.enabled else 1
+    for attempt in range(attempts):
+        response = await client.post(url, json=payload, timeout=timeout)
+        if not settings.enabled or not response_indicates_pressure(response.status_code):
+            return response
+        if attempt >= settings.max_retries:
+            return response
+        await sleep_backoff(
+            attempt,
+            settings,
+            reason=f"HTTP {response.status_code} url={url}",
+        )
+    assert response is not None
+    return response
 _WARNING_DEDUP_WINDOW_S = 5.0
 _LAST_WARNING_AT: Dict[str, float] = {}
 
@@ -71,15 +109,30 @@ async def predict_quality_async(
     return result
 
 
-async def _llama_cpp_predict_async(
+async def _fetch_llama_text_async(
     engine: LlamaCppInferenceEngine,
     client: httpx.AsyncClient,
     photo_path: str,
     metrics: Dict[str, Any],
-) -> Dict[str, str]:
-    payload = {
+    prompt: str,
+) -> str:
+    url = f"{engine.host}{engine.endpoint}"
+    timeout = httpx.Timeout(engine.timeout_s)
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": engine._encode_image_data_uri(photo_path)},
+                },
+            ],
+        }
+    ]
+    payload: Dict[str, Any] = {
         "model": engine.model,
-        "messages": engine._build_messages(photo_path, metrics),
+        "messages": messages,
         "temperature": engine.temperature,
         "max_tokens": engine.max_tokens,
         "stream": False,
@@ -87,31 +140,48 @@ async def _llama_cpp_predict_async(
     if engine.use_response_format:
         payload["response_format"] = {"type": "json_object"}
 
+    response = await _post_json_with_backoff(
+        engine, client, url, payload=payload, timeout=timeout
+    )
+    if response.status_code >= 400 and "response_format" in payload:
+        payload_without_format = dict(payload)
+        payload_without_format.pop("response_format", None)
+        response = await _post_json_with_backoff(
+            engine, client, url, payload=payload_without_format, timeout=timeout
+        )
+    response.raise_for_status()
+    body = response.json()
+    return str(body.get("choices", [{}])[0].get("message", {}).get("content", ""))
+
+
+async def _llama_cpp_predict_async(
+    engine: LlamaCppInferenceEngine,
+    client: httpx.AsyncClient,
+    photo_path: str,
+    metrics: Dict[str, Any],
+) -> Dict[str, str]:
     url = f"{engine.host}{engine.endpoint}"
-    timeout = httpx.Timeout(engine.timeout_s)
     logger.debug(
         "predict_quality_async(llama_cpp): POST %s timeout_s=%.1f",
         url,
         engine.timeout_s,
     )
     try:
-        response = await client.post(url, json=payload, timeout=timeout)
-        if response.status_code >= 400 and "response_format" in payload:
-            payload_without_format = dict(payload)
-            payload_without_format.pop("response_format", None)
-            response = await client.post(url, json=payload_without_format, timeout=timeout)
-        response.raise_for_status()
-        body = response.json()
-        model_text = str(body.get("choices", [{}])[0].get("message", {}).get("content", ""))
-        parsed = engine._extract_json_object(model_text)
-        return InferenceOutput.from_payload(
-            parsed,
-            default_msg="llama.cpp returned unparsable response.",
+        result = await run_contract_inference_loop_async(
+            engine._contract,
             backend=engine.backend_name,
-        ).to_dict()
+            default_msg="llama.cpp returned unparsable response.",
+            build_initial_prompt=lambda: engine._build_base_prompt(metrics),
+            fetch_model_text=lambda prompt: _fetch_llama_text_async(
+                engine, client, photo_path, metrics, prompt
+            ),
+        )
+        return engine._apply_post_repair_fallback_policy(
+            result, photo_path, metrics, label="llama.cpp"
+        )
     except Exception as exc:
         _warn_with_dedup("predict_quality_async(llama_cpp)", url, exc)
-        if engine.fallback_to_simulated:
+        if engine.fallback_to_simulated and not engine._contract.strict_contract:
             fallback = await asyncio.to_thread(
                 engine.simulated_fallback.predict_quality, photo_path, metrics
             )
@@ -126,17 +196,14 @@ async def _llama_cpp_predict_async(
         ).to_dict()
 
 
-async def _ollama_predict_async(
+async def _fetch_ollama_text_async(
     engine: OllamaVisionInferenceEngine,
     client: httpx.AsyncClient,
     photo_path: str,
-    metrics: Dict[str, Any],
-) -> Dict[str, str]:
-    prompt = (
-        f"{engine.prompt_template}\n"
-        f"Metrics: {json.dumps(metrics, ensure_ascii=False)}\n"
-        f"Thresholds: {json.dumps(engine.thresholds, ensure_ascii=False)}"
-    )
+    prompt: str,
+) -> str:
+    url = f"{engine.host}/api/generate"
+    timeout = httpx.Timeout(engine.timeout_s)
     payload = {
         "model": engine.model,
         "prompt": prompt,
@@ -144,27 +211,42 @@ async def _ollama_predict_async(
         "images": [await asyncio.to_thread(engine._encode_image, photo_path)],
         "format": "json",
     }
+    response = await _post_json_with_backoff(
+        engine, client, url, payload=payload, timeout=timeout
+    )
+    response.raise_for_status()
+    body = response.json()
+    return str(body.get("response", ""))
+
+
+async def _ollama_predict_async(
+    engine: OllamaVisionInferenceEngine,
+    client: httpx.AsyncClient,
+    photo_path: str,
+    metrics: Dict[str, Any],
+) -> Dict[str, str]:
     url = f"{engine.host}/api/generate"
-    timeout = httpx.Timeout(engine.timeout_s)
     logger.debug(
         "predict_quality_async(ollama): POST %s timeout_s=%.1f",
         url,
         engine.timeout_s,
     )
     try:
-        response = await client.post(url, json=payload, timeout=timeout)
-        response.raise_for_status()
-        body = response.json()
-        model_text = str(body.get("response", ""))
-        parsed = engine._extract_json_object(model_text)
-        return InferenceOutput.from_payload(
-            parsed,
-            default_msg="Ollama returned unparsable response.",
+        result = await run_contract_inference_loop_async(
+            engine._contract,
             backend=engine.backend_name,
-        ).to_dict()
+            default_msg="Ollama returned unparsable response.",
+            build_initial_prompt=lambda: engine._build_base_prompt(metrics),
+            fetch_model_text=lambda prompt: _fetch_ollama_text_async(
+                engine, client, photo_path, prompt
+            ),
+        )
+        return engine._apply_post_repair_fallback_policy(
+            result, photo_path, metrics, label="Ollama"
+        )
     except Exception as exc:
         _warn_with_dedup("predict_quality_async(ollama)", url, exc)
-        if engine.fallback_to_simulated:
+        if engine.fallback_to_simulated and not engine._contract.strict_contract:
             fallback = await asyncio.to_thread(
                 engine.simulated_fallback.predict_quality, photo_path, metrics
             )

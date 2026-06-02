@@ -1,0 +1,8 @@
+{
+  "profile": "live_baseline",
+  "recorded_at": null,
+  "batch_report": null,
+  "inference_backend": null,
+  "observed": {},
+  "notes": "Run: bash scripts/run_live_kpi_baseline.sh — then inspect or commit after review."
+}

@@ -52,6 +52,10 @@
         "loopback_planner": {
             "mode": "simulated",
             "require_healthy_on_startup": true,
+            "contract": {
+                "max_json_repair_attempts": 0,
+                "unstable_repair_release": "REVIEW"
+            },
             "llm": {
                 "host": "http://127.0.0.1:8080",
                 "endpoint": "/v1/chat/completions",
@@ -60,6 +64,14 @@
                 "temperature": 0.0,
                 "max_tokens": 200
             }
+        },
+        "adaptive_backoff": {
+            "enabled": false,
+            "max_retries": 2,
+            "base_delay_s": 0.25,
+            "max_delay_s": 8.0,
+            "jitter_ratio": 0.2,
+            "concurrency_floor": 1
         }
     },
     "quality_gate": {
@@ -71,6 +83,18 @@
             "engine_weight": 0.6,
             "model_weight": 0.4
         },
-        "auto_tag_conflicts": true
+        "auto_tag_conflicts": true,
+        "semantic_asserts_enabled": true,
+        "semantic_policy": {
+            "invalid_label_release": "NO_GO",
+            "confidence_violation_policy": "review",
+            "inference_error_release": "NO_GO"
+        },
+        "llm_judge": {
+            "enabled": false,
+            "max_calls_per_batch": 5,
+            "mode": "simulated",
+            "tie_break": "conservative"
+        }
     }
 }

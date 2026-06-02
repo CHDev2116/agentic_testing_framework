@@ -1,11 +1,15 @@
 import base64
 import json
+import logging
 import os
 from importlib import import_module
 from typing import Any, Dict, List
 
+from models.contract_repair import ContractRepairSettings, run_contract_inference_loop
 from models.contracts import InferenceOutput
 from models.llama_quantizer import LlamaQuantizer
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_result(result: Any, default_msg: str) -> Dict[str, Any]:
@@ -20,6 +24,35 @@ def _get_requests():
     if _REQUESTS_MODULE is None:
         _REQUESTS_MODULE = import_module("requests")
     return _REQUESTS_MODULE
+
+
+def apply_post_repair_fallback_policy(
+    *,
+    result: Dict[str, Any],
+    photo_path: str,
+    metrics: Dict[str, Any],
+    label: str,
+    backend_name: str,
+    contract: ContractRepairSettings,
+    simulated_fallback: Any,
+    fallback_to_simulated: bool,
+) -> Dict[str, Any]:
+    repair_failed = (
+        result.get("code") == "ERR_MODEL_RESPONSE_422"
+        and "repair_exhausted" in str(result.get("msg", ""))
+    )
+    if repair_failed and fallback_to_simulated and not contract.strict_contract:
+        fallback = simulated_fallback.predict_quality(photo_path, metrics)
+        fallback["msg"] = f"{label} fallback to simulated inference after contract repair failure"
+        fallback["backend"] = f"{backend_name}->simulated"
+        return fallback
+    if repair_failed and fallback_to_simulated and contract.strict_contract:
+        meta = dict(result.get("contract_meta") or {})
+        meta["strict_fallback_blocked"] = True
+        tagged = dict(result)
+        tagged["contract_meta"] = meta
+        return tagged
+    return result
 
 
 class SimulatedInferenceEngine:
@@ -40,10 +73,19 @@ class SimulatedInferenceEngine:
 class OllamaVisionInferenceEngine:
     backend_name = "ollama_vision"
 
-    def __init__(self, thresholds: Dict[str, Any], inference_cfg: Dict[str, Any]):
+    def __init__(
+        self,
+        thresholds: Dict[str, Any],
+        inference_cfg: Dict[str, Any],
+        *,
+        replay_mode: str = "off",
+    ):
         self.thresholds = thresholds
         self.simulated_fallback = SimulatedInferenceEngine(thresholds)
         self.fallback_to_simulated = bool(inference_cfg.get("fallback_to_simulated", True))
+        self._contract = ContractRepairSettings.from_inference_cfg(
+            inference_cfg, replay_mode=replay_mode
+        )
         ollama_cfg = inference_cfg.get("ollama", {})
         self.host = str(ollama_cfg.get("host", "http://localhost:11434")).rstrip("/")
         self.model = str(ollama_cfg.get("model", "llava:7b"))
@@ -63,26 +105,14 @@ class OllamaVisionInferenceEngine:
         with open(photo_path, "rb") as f:
             return base64.b64encode(f.read()).decode("utf-8")
 
-    def _extract_json_object(self, raw_text: str) -> Dict[str, Any]:
-        try:
-            return json.loads(raw_text)
-        except json.JSONDecodeError:
-            start = raw_text.find("{")
-            end = raw_text.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                try:
-                    return json.loads(raw_text[start : end + 1])
-                except json.JSONDecodeError:
-                    return {}
-            return {}
-
-    def predict_quality(self, photo_path: str, metrics: Dict[str, Any]) -> Dict[str, str]:
-        prompt = (
+    def _build_base_prompt(self, metrics: Dict[str, Any]) -> str:
+        return (
             f"{self.prompt_template}\n"
             f"Metrics: {json.dumps(metrics, ensure_ascii=False)}\n"
             f"Thresholds: {json.dumps(self.thresholds, ensure_ascii=False)}"
         )
 
+    def _fetch_ollama_text(self, photo_path: str, prompt: str) -> str:
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -90,22 +120,51 @@ class OllamaVisionInferenceEngine:
             "images": [self._encode_image(photo_path)],
             "format": "json",
         }
+        response = _get_requests().post(
+            f"{self.host}/api/generate", json=payload, timeout=self.timeout_s
+        )
+        response.raise_for_status()
+        body = response.json()
+        return str(body.get("response", ""))
 
+    def _apply_post_repair_fallback_policy(
+        self,
+        result: Dict[str, Any],
+        photo_path: str,
+        metrics: Dict[str, Any],
+        *,
+        label: str,
+    ) -> Dict[str, Any]:
+        return apply_post_repair_fallback_policy(
+            result=result,
+            photo_path=photo_path,
+            metrics=metrics,
+            label=label,
+            backend_name=self.backend_name,
+            contract=self._contract,
+            simulated_fallback=self.simulated_fallback,
+            fallback_to_simulated=self.fallback_to_simulated,
+        )
+
+    def predict_quality(self, photo_path: str, metrics: Dict[str, Any]) -> Dict[str, str]:
         try:
-            response = _get_requests().post(
-                f"{self.host}/api/generate", json=payload, timeout=self.timeout_s
-            )
-            response.raise_for_status()
-            body = response.json()
-            model_text = str(body.get("response", ""))
-            parsed = self._extract_json_object(model_text)
-            return InferenceOutput.from_payload(
-                parsed,
-                default_msg="Ollama returned unparsable response.",
+            result = run_contract_inference_loop(
+                self._contract,
                 backend=self.backend_name,
-            ).to_dict()
+                default_msg="Ollama returned unparsable response.",
+                build_initial_prompt=lambda: self._build_base_prompt(metrics),
+                fetch_model_text=lambda prompt: self._fetch_ollama_text(photo_path, prompt),
+            )
+            return self._apply_post_repair_fallback_policy(
+                result, photo_path, metrics, label="Ollama"
+            )
         except Exception as exc:
-            if self.fallback_to_simulated:
+            logger.warning(
+                "Ollama predict_quality failed: backend=%s error=%s",
+                self.backend_name,
+                exc,
+            )
+            if self.fallback_to_simulated and not self._contract.strict_contract:
                 fallback = self.simulated_fallback.predict_quality(photo_path, metrics)
                 fallback["msg"] = f"Ollama fallback to simulated inference: {exc}"
                 fallback["backend"] = f"{self.backend_name}->simulated"
@@ -171,10 +230,19 @@ class MockAPIInferenceEngine:
 class LlamaCppInferenceEngine:
     backend_name = "llama_cpp"
 
-    def __init__(self, thresholds: Dict[str, Any], inference_cfg: Dict[str, Any]):
+    def __init__(
+        self,
+        thresholds: Dict[str, Any],
+        inference_cfg: Dict[str, Any],
+        *,
+        replay_mode: str = "off",
+    ):
         self.thresholds = thresholds
         self.simulated_fallback = SimulatedInferenceEngine(thresholds)
         self.fallback_to_simulated = bool(inference_cfg.get("fallback_to_simulated", True))
+        self._contract = ContractRepairSettings.from_inference_cfg(
+            inference_cfg, replay_mode=replay_mode
+        )
         llama_cpp_cfg = inference_cfg.get("llama_cpp", {})
         self.host = str(llama_cpp_cfg.get("host", "http://127.0.0.1:8080")).rstrip("/")
         self.endpoint = str(llama_cpp_cfg.get("endpoint", "/v1/chat/completions"))
@@ -208,19 +276,6 @@ class LlamaCppInferenceEngine:
             mime_type = "image/webp"
         return f"data:{mime_type};base64,{image_base64}"
 
-    def _extract_json_object(self, raw_text: str) -> Dict[str, Any]:
-        try:
-            return json.loads(raw_text)
-        except json.JSONDecodeError:
-            start = raw_text.find("{")
-            end = raw_text.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                try:
-                    return json.loads(raw_text[start : end + 1])
-                except json.JSONDecodeError:
-                    return {}
-            return {}
-
     def _build_messages(self, photo_path: str, metrics: Dict[str, Any]) -> List[Dict[str, Any]]:
         text_prompt = (
             f"{self.prompt_template}\n"
@@ -240,10 +295,22 @@ class LlamaCppInferenceEngine:
             }
         ]
 
-    def predict_quality(self, photo_path: str, metrics: Dict[str, Any]) -> Dict[str, str]:
-        payload = {
+    def _fetch_llama_text(self, photo_path: str, metrics: Dict[str, Any], prompt: str) -> str:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": self._encode_image_data_uri(photo_path)},
+                    },
+                ],
+            }
+        ]
+        payload: Dict[str, Any] = {
             "model": self.model,
-            "messages": self._build_messages(photo_path, metrics),
+            "messages": messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "stream": False,
@@ -251,31 +318,68 @@ class LlamaCppInferenceEngine:
         if self.use_response_format:
             payload["response_format"] = {"type": "json_object"}
 
-        try:
+        response = _get_requests().post(
+            f"{self.host}{self.endpoint}", json=payload, timeout=self.timeout_s
+        )
+        if response.status_code >= 400 and "response_format" in payload:
+            payload_without_format = dict(payload)
+            payload_without_format.pop("response_format", None)
             response = _get_requests().post(
-                f"{self.host}{self.endpoint}", json=payload, timeout=self.timeout_s
+                f"{self.host}{self.endpoint}",
+                json=payload_without_format,
+                timeout=self.timeout_s,
             )
-            if response.status_code >= 400 and "response_format" in payload:
-                payload_without_format = dict(payload)
-                payload_without_format.pop("response_format", None)
-                response = _get_requests().post(
-                    f"{self.host}{self.endpoint}",
-                    json=payload_without_format,
-                    timeout=self.timeout_s,
-                )
-            response.raise_for_status()
-            body = response.json()
-            model_text = str(
-                body.get("choices", [{}])[0].get("message", {}).get("content", "")
-            )
-            parsed = self._extract_json_object(model_text)
-            return InferenceOutput.from_payload(
-                parsed,
-                default_msg="llama.cpp returned unparsable response.",
+        response.raise_for_status()
+        body = response.json()
+        return str(body.get("choices", [{}])[0].get("message", {}).get("content", ""))
+
+    def _build_base_prompt(self, metrics: Dict[str, Any]) -> str:
+        return (
+            f"{self.prompt_template}\n"
+            f"Metrics: {json.dumps(metrics, ensure_ascii=False)}\n"
+            f"Thresholds: {json.dumps(self.thresholds, ensure_ascii=False)}"
+        )
+
+    def _apply_post_repair_fallback_policy(
+        self,
+        result: Dict[str, Any],
+        photo_path: str,
+        metrics: Dict[str, Any],
+        *,
+        label: str,
+    ) -> Dict[str, Any]:
+        return apply_post_repair_fallback_policy(
+            result=result,
+            photo_path=photo_path,
+            metrics=metrics,
+            label=label,
+            backend_name=self.backend_name,
+            contract=self._contract,
+            simulated_fallback=self.simulated_fallback,
+            fallback_to_simulated=self.fallback_to_simulated,
+        )
+
+    def predict_quality(self, photo_path: str, metrics: Dict[str, Any]) -> Dict[str, str]:
+        try:
+            result = run_contract_inference_loop(
+                self._contract,
                 backend=self.backend_name,
-            ).to_dict()
+                default_msg="llama.cpp returned unparsable response.",
+                build_initial_prompt=lambda: self._build_base_prompt(metrics),
+                fetch_model_text=lambda prompt: self._fetch_llama_text(
+                    photo_path, metrics, prompt
+                ),
+            )
+            return self._apply_post_repair_fallback_policy(
+                result, photo_path, metrics, label="llama.cpp"
+            )
         except Exception as exc:
-            if self.fallback_to_simulated:
+            logger.warning(
+                "llama.cpp predict_quality failed: backend=%s error=%s",
+                self.backend_name,
+                exc,
+            )
+            if self.fallback_to_simulated and not self._contract.strict_contract:
                 fallback = self.simulated_fallback.predict_quality(photo_path, metrics)
                 fallback["msg"] = f"llama.cpp fallback to simulated inference: {exc}"
                 fallback["backend"] = f"{self.backend_name}->simulated"
@@ -291,12 +395,22 @@ class LlamaCppInferenceEngine:
 def build_inference_engine(config: Dict[str, Any]):
     thresholds = config.get("thresholds", {})
     inference_cfg = config.get("model_settings", {}).get("inference", {})
+    runtime_cfg = config.get("runtime", {})
+    replay_mode = str(runtime_cfg.get("replay_mode", "off")).lower()
     backend = str(inference_cfg.get("backend", "simulated")).lower()
 
     if backend == "llama_cpp":
-        return LlamaCppInferenceEngine(thresholds=thresholds, inference_cfg=inference_cfg)
+        return LlamaCppInferenceEngine(
+            thresholds=thresholds,
+            inference_cfg=inference_cfg,
+            replay_mode=replay_mode,
+        )
     if backend == "ollama_vision":
-        return OllamaVisionInferenceEngine(thresholds=thresholds, inference_cfg=inference_cfg)
+        return OllamaVisionInferenceEngine(
+            thresholds=thresholds,
+            inference_cfg=inference_cfg,
+            replay_mode=replay_mode,
+        )
     if backend == "mock_api":
         return MockAPIInferenceEngine(thresholds=thresholds, inference_cfg=inference_cfg)
     return SimulatedInferenceEngine(thresholds=thresholds)

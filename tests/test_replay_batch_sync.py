@@ -152,3 +152,28 @@ def test_finalize_batch_report_includes_quality_kpis():
     assert kpis["inference_fallback_count"] == 1
     assert kpis["loopback_fallback_count"] == 1
     assert kpis["fallback_ratio"] == 1.0
+
+
+def test_quality_kpis_semantic_assert_fail_count():
+    batch_report = {
+        "batch_id": "test",
+        "results": [
+            {
+                "file": "dark.jpg",
+                "status": "SUCCESS",
+                "metrics": {"avg_brightness": 10.0, "sharpness": 50.0},
+                "decision": {"decision": "Optimal", "code": "SUCCESS_200"},
+                "contract": {
+                    "semantic_errors": [
+                        "semantic: Optimal contradicts metrics (expected 'Under-exposed' from brightness/sharpness)"
+                    ],
+                },
+            },
+        ],
+    }
+    kpis = qa._compute_batch_quality_kpis(
+        batch_report,
+        per_image_releases=["NO_GO"],
+        review_breakdown={},
+    )
+    assert kpis["semantic_assert_fail_count"] == 1

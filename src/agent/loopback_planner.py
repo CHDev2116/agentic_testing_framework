@@ -5,6 +5,11 @@ import logging
 from importlib import import_module
 from typing import Any, Dict, List, Protocol
 
+from agent.planner_contract import (
+    PlannerRepairSettings,
+    run_planner_contract_loop,
+    validate_planner_payload,
+)
 from models.contracts import LoopbackPlan
 
 logger = logging.getLogger(__name__)
@@ -132,6 +137,7 @@ class LLMLoopbackPlanner:
 
     def __init__(self, planner_cfg: Dict[str, Any], fallback_planner: LoopbackPlanner):
         self.fallback_planner = fallback_planner
+        self._contract = PlannerRepairSettings.from_planner_cfg(planner_cfg)
         self.host = str(planner_cfg.get("host", "http://127.0.0.1:8080")).rstrip("/")
         self.endpoint = str(planner_cfg.get("endpoint", "/v1/chat/completions"))
         self.model = str(planner_cfg.get("model", "local-model"))
@@ -185,6 +191,21 @@ class LLMLoopbackPlanner:
             except json.JSONDecodeError:
                 return {}
 
+    def _fetch_planner_text(self, prompt: str) -> str:
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        }
+        url = f"{self.host}{self.endpoint}"
+        response = _get_requests().post(url, json=payload, timeout=self.timeout_s)
+        response.raise_for_status()
+        body = response.json()
+        return str(body.get("choices", [{}])[0].get("message", {}).get("content", ""))
+
     def plan(
         self,
         *,
@@ -194,23 +215,46 @@ class LLMLoopbackPlanner:
         loopback_guard_cfg: Dict[str, Any],
         attempt_history: List[Dict[str, Any]],
     ) -> LoopbackPlan:
-        payload = self._build_payload(
-            signal=signal,
-            engine_metrics=engine_metrics,
-            thresholds_cfg=thresholds_cfg,
-            loopback_guard_cfg=loopback_guard_cfg,
-            attempt_history=attempt_history,
-        )
+        def build_prompt() -> str:
+            payload = self._build_payload(
+                signal=signal,
+                engine_metrics=engine_metrics,
+                thresholds_cfg=thresholds_cfg,
+                loopback_guard_cfg=loopback_guard_cfg,
+                attempt_history=attempt_history,
+            )
+            return str(payload["messages"][0]["content"])
+
         url = f"{self.host}{self.endpoint}"
         logger.info("Loopback planner (llm): requesting next action from %s", url)
         try:
-            response = _get_requests().post(url, json=payload, timeout=self.timeout_s)
-            response.raise_for_status()
-            body = response.json()
-            content = str(
-                body.get("choices", [{}])[0].get("message", {}).get("content", "")
+            parsed, repair_attempts = run_planner_contract_loop(
+                self._contract,
+                build_initial_prompt=build_prompt,
+                fetch_model_text=self._fetch_planner_text,
             )
-            parsed = self._extract_json_object(content)
+            if repair_attempts:
+                logger.info(
+                    "Loopback planner (llm): contract repair_attempts=%s", repair_attempts
+                )
+            if validate_planner_payload(parsed):
+                logger.warning(
+                    "Loopback planner (llm): invalid planner JSON after repair, using fallback"
+                )
+                fallback_plan = self.fallback_planner.plan(
+                    signal=signal,
+                    engine_metrics=engine_metrics,
+                    thresholds_cfg=thresholds_cfg,
+                    loopback_guard_cfg=loopback_guard_cfg,
+                    attempt_history=attempt_history,
+                )
+                return LoopbackPlan(
+                    action=fallback_plan.action,
+                    stop_reason=fallback_plan.stop_reason,
+                    rationale=fallback_plan.rationale,
+                    fallback_used=True,
+                    planner_backend="llm->simulated",
+                )
             action = str(parsed.get("action", "stop")).lower()
             rationale = str(parsed.get("rationale", "planner returned no rationale"))
             if action not in self.VALID_ACTIONS:

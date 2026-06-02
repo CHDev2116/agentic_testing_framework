@@ -202,6 +202,65 @@ python3 src/ai_quality_agent.py --profile dev --replay-mode record --replay-file
 python3 src/ai_quality_agent.py --profile dev --replay-mode replay --replay-file results/replay_trace.jsonl
 ```
 
+Inference JSON contract (self-repair + strict mode):
+
+Default is **off** (`max_json_repair_attempts: 0`) so CI and simulated batches stay deterministic. Enable in config under `model_settings.inference.contract`:
+
+```json
+{
+  "model_settings": {
+    "inference": {
+      "backend": "ollama_vision",
+      "fallback_to_simulated": true,
+      "contract": {
+        "max_json_repair_attempts": 2,
+        "strict_contract": false,
+        "repair_on_empty_dict": true,
+        "repair_prompt_suffix": "Return ONLY a single JSON object with keys decision, code, msg."
+      }
+    }
+  }
+}
+```
+
+Behavior:
+
+- Parse/validate failures trigger up to N extra LLM calls with validation feedback (`contract_validator.py`).
+- Success attaches `contract_meta.repair_attempts` on the inference dict.
+- After exhausted repair: `ERR_MODEL_RESPONSE_422` + `repair_exhausted` in `msg`; may fall back to `simulated` unless `strict_contract` is true.
+- `runtime.replay_mode=replay` disables repair (same as CI replay smoke).
+
+Semantic asserts (P2) run by default via `eval_settings.semantic_asserts_enabled` (default true). Row-level issues appear in `contract.semantic_errors`; batch summary includes `semantic_assert_fail_count` and `review_breakdown.SEMANTIC_ASSERT_MISMATCH` when arbitration input is overridden.
+
+Oracle historical regression (frozen release semantics):
+
+```bash
+PYTHONPATH=src pytest tests/test_oracle_regression.py -q
+```
+
+Import a row from a past batch report into the oracle corpus:
+
+```bash
+PYTHONPATH=src python scripts/append_oracle_case_from_batch.py \
+  --batch-report results/dev/batch_report_YYYYMMDD_HHMMSS.json \
+  --file your_image.jpg \
+  --id hist-NNN-short-name \
+  --description "What this incident was"
+```
+
+See `tests/regression/README.md` and `docs/RegressionVersioning.md`. Rule-change drift vs committed snapshots:
+
+```bash
+python scripts/diff_oracle_semantics.py
+python scripts/refresh_oracle_snapshot.py   # after intentional policy change
+```
+
+CI posts a **semantic changelog** to the GitHub job summary on every run; PRs also enforce snapshot parity (`scripts/ci_oracle_semantic_summary.sh`).
+
+**JSON repair audit:** when `contract.max_json_repair_attempts > 0`, each row gets `contract_meta.repair_audit` and `unstable_repair` if decision flips across repair rounds. Default `contract.unstable_repair_release: REVIEW` downgrades release for audit. See `docs/RepairAudit.md`, `docs/FailureTaxonomy.md` (triage **IN**).
+
+Replay CI uses stricter KPI thresholds (`.ci/replay_quality_kpi_thresholds.json`: `max_semantic_assert_fail_count=0`).
+
 </details>
 
 <details>
@@ -227,11 +286,28 @@ docker run --rm \
 </details>
 
 <details>
+<summary><strong>Live KPI baseline (optional, not CI)</strong></summary>
+
+Profile `live_baseline` runs real inference + contract repair + adaptive backoff + LLM judge (Ollama). Requires a local server (`llama.cpp` on `:8080` or Ollama on `:11434`).
+
+```bash
+bash scripts/run_live_kpi_baseline.sh
+INFERENCE_BACKEND=ollama_vision bash scripts/run_live_kpi_baseline.sh
+PROPOSE_THRESHOLDS=1 bash scripts/run_live_kpi_baseline.sh   # tighten .ci/live_quality_kpi_thresholds.json
+```
+
+Writes `.ci/live_quality_kpi_baseline.json` and checks loose ceilings with `--warn-only`. See `docs/LiveKPIBaseline.md`.
+
+</details>
+
+<details>
 <summary><strong>CI / local tests</strong></summary>
 
 ```bash
 python -m pip install -U pip
 pip install -e ".[dev]"
+PYTHONPATH=src pytest tests/test_oracle_regression.py -q
+python scripts/check_quality_kpis.py --enforce --thresholds-file .ci/quality_kpi_thresholds.json
 bash scripts/dev_prepush_check.sh
 ```
 
@@ -265,6 +341,9 @@ Workflow reference: `.github/workflows/ci.yml`
 - [x] Batch ranking + release arbitration
 - [x] Repeatability / performance / overhead analysis
 - [x] Automated JSON error reporting with retention
+- [x] Deterministic replay (JSONL planner trace + CI smoke)
+- [x] Contract hardening (JSON repair, semantic asserts, oracle regression)
+- [x] Adaptive backoff module for async HTTP (config-gated, see `docs/AdaptiveBackoff.md`)
 
 **Backlog (intentionally deferred)**
 
@@ -273,14 +352,8 @@ Workflow reference: `.github/workflows/ci.yml`
 
 **Future roadmap (agentic testing hardening)**
 
-- **Deterministic replay mode (VCR-style)**  
-  Priority: **P0** | Effort: **M** | Impact: **High**  
-  Record planner prompts/responses and decision-state transitions on a known-good run, then support playback-only regression mode to eliminate flaky LLM variance and reduce token spend.
-
-- **Adaptive backoff + dynamic concurrency**  
-  Priority: **P1** | Effort: **M-L** | Impact: **High**  
-  Evolve from fixed semaphore limits to runtime-aware rate control (429/503 detection, exponential backoff with jitter, and temporary permit reduction) so test loops remain stable under service pressure.
-
+- **LLM judge on REVIEW rows (P2.1)** — shipped (simulated, cost-capped); enable via `eval_settings.llm_judge.enabled`.
+- **Critique Agent** — outline in `docs/CritiqueAgent.md` (assertion strength / schema coverage recommendations, not a CI gate).
 - **Schema-driven auto assertion generation**  
   Priority: **P2** | Effort: **L** | Impact: **High**  
   Use observed response samples and Pydantic contracts to infer boundary/type assertions and scaffold `tests/test_generated_*.py` candidates, reducing manual test-authoring overhead for newly explored paths.

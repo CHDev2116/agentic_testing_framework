@@ -48,3 +48,8 @@ if failed:
     sys.exit(1)
 print(f"[replay-smoke] PASS ({report_path})")
 PY
+
+echo "[replay-smoke] KPI gate (strict semantic + contract)"
+python3 scripts/check_quality_kpis.py --enforce \
+  --batch-report "$LATEST_REPORT" \
+  --thresholds-file .ci/replay_quality_kpi_thresholds.json

@@ -7,6 +7,11 @@ class DecisionConflict(Enum):
     PHYSICAL_FAIL_MODEL_OK = "Engine Fails but Model OK (Potential Over-optimism)"
     ALL_PASS = "Consistent Pass"
     ALL_FAIL = "Consistent Fail"
+    SEMANTIC_INVALID_LABEL = "Invalid model label (semantic policy)"
+    SEMANTIC_CONFIDENCE_VIOLATION = "Confidence out of range (semantic policy)"
+    SEMANTIC_INFERENCE_ERROR = "Inference error verdict (semantic policy)"
+    LLM_JUDGE_OVERRIDE = "LLM judge tie-break override"
+    UNSTABLE_JSON_REPAIR = "JSON repair semantic drift (unstable repair audit)"
 
 
 def _is_physically_ok(engine_metrics, thresholds):
