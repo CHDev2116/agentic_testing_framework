@@ -328,35 +328,24 @@ Workflow reference: `.github/workflows/ci.yml`
 </details>
 
 <details>
-<summary><strong>Deeper documentation & roadmap</strong></summary>
+<summary><strong>Deeper documentation</strong></summary>
 
 **Docs**
 
 - Architecture and provider details: [`docs/Architecture.md`](docs/Architecture.md)
+- Oracle regression, semantic snapshots, repair audit: `tests/regression/README.md`, `docs/RegressionVersioning.md`, `docs/RepairAudit.md`
+- Failure triage (DQ / LD / IN): `docs/FailureTaxonomy.md`
 - For benchmark, repeatability, and reliability narratives, use docs + report artifacts under `results/`.
 
-**Roadmap (shipped)**
+**Capabilities (current)**
 
-- [x] Multi-backend inference abstraction
-- [x] Batch ranking + release arbitration
-- [x] Repeatability / performance / overhead analysis
-- [x] Automated JSON error reporting with retention
-- [x] Deterministic replay (JSONL planner trace + CI smoke)
-- [x] Contract hardening (JSON repair, semantic asserts, oracle regression)
-- [x] Adaptive backoff module for async HTTP (config-gated, see `docs/AdaptiveBackoff.md`)
-
-**Backlog (intentionally deferred)**
-
-- **Multi-threading for very large batches**: not on the near-term roadmap so batch runs stay **single-threaded and easier to reproduce** in CI, benchmarks, and incident debugging. Revisit only after profiling shows preprocessing (not inference I/O) as the clear bottleneck.
-- **Extended OpenCV visual diagnostics**: basic histogram-based exposure checks already live in `engine/image_validator.py`; richer diagnostics (e.g. saliency, segmentation-assisted QA) stay **out of scope** until there is a concrete partner or product requirement, to avoid scope creep ahead of a stable inference contract.
-
-**Future roadmap (agentic testing hardening)**
-
-- **LLM judge on REVIEW rows (P2.1)** — shipped (simulated, cost-capped); enable via `eval_settings.llm_judge.enabled`.
-- **Critique Agent** — outline in `docs/CritiqueAgent.md` (assertion strength / schema coverage recommendations, not a CI gate).
-- **Schema-driven auto assertion generation**  
-  Priority: **P2** | Effort: **L** | Impact: **High**  
-  Use observed response samples and Pydantic contracts to infer boundary/type assertions and scaffold `tests/test_generated_*.py` candidates, reducing manual test-authoring overhead for newly explored paths.
+- Multi-backend inference abstraction
+- Batch ranking + release arbitration
+- Repeatability / performance / overhead analysis
+- Deterministic replay (JSONL planner trace + CI smoke)
+- Contract hardening (JSON repair, semantic asserts, oracle regression, `repair_audit`)
+- Adaptive backoff for async HTTP (`docs/AdaptiveBackoff.md`, config-gated)
+- Optional LLM judge on `REVIEW` rows (`eval_settings.llm_judge`, default off)
 
 </details>
 

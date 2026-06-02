@@ -33,7 +33,7 @@ test_images/
 # Packaging artifacts
 *.egg-info/
 
-# Local-only / interview prep (not part of public repo story)
+# Local-only / interview prep / internal planning (not for public GitHub)
 docs/IntegrationGuide.md
 docs/AdvocacyCaseStudy.md
 docs/InterviewNarratives.md
@@ -41,5 +41,9 @@ docs/InterviewLanguagePrep.md
 docs/linkedin-self-healing-vision-qa.md
 docs/CollaborationPlan.md
 docs/ContractHardening.md
+docs/CritiqueAgent.md
+docs/InferenceResultCache.md
 docs/*Collaboration*.md
 docs/*Plan*.md
+docs/LOCAL_*.md
+docs/internal/

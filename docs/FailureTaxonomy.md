@@ -70,7 +70,6 @@ flowchart TD
 **Action:**
 
 - Prefer **record → replay** (`runtime.replay_mode`) for CI and regression.
-- Use **inference result cache** (see `docs/InferenceResultCache.md`) in dev loops.
 - Cap cost: `llm_judge`, repair attempts; tag row `IN` in postmortem, not LD.
 
 **Do not** encode flaky live output into `oracle_cases.jsonl` without replay-freezing the inference payload.

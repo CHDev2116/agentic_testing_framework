@@ -1,5 +1,5 @@
 """
-Adaptive rate limiting for async HTTP inference (roadmap implementation).
+Adaptive rate limiting for async HTTP inference (config-gated).
 
 Detects pressure via HTTP status codes and applies exponential backoff with jitter
 before retrying idempotent requests.

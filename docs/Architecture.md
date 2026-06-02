@@ -59,13 +59,11 @@ This repo avoids that by layering oracles:
   - inference outputs are normalized by `InferenceOutput` (`src/models/contracts.py`)
   - planner rationales are used for traceability, but the *stop/go* decision remains rule-based.
 
-What is still intentionally deferred:
-- A "Critique Agent" that scores assertion strength / schema coverage is listed as a roadmap item, not a current gate.
-- LLM-as-judge for disputed `REVIEW` rows (P2.1) is not a CI gate.
+**Regression & audit tooling (shipped):**
 
-Shipped since the original roadmap note:
 - **Deterministic replay** for loopback planner steps (`--replay-mode`, JSONL trace, CI replay smoke).
 - **Historical oracle regression** (`tests/regression/oracle_cases.jsonl`, `tests/test_oracle_regression.py`).
+- **JSON repair audit** (`contract_meta.repair_audit`, `unstable_repair` policy) — see `docs/RepairAudit.md`.
 
 ## Pipeline entry points (two tracks)
 
@@ -251,8 +249,6 @@ Frozen cases in `tests/regression/oracle_cases.jsonl` lock `(metrics, model deci
 **Versioned semantics snapshots** (`tests/regression/snapshots/`, `scripts/diff_oracle_semantics.py`) record rule outputs at a tagged commit so PRs can attach a **semantic changelog** (release/conflict drift), not only pass/fail. See `docs/RegressionVersioning.md`.
 
 **Failure triage** for REVIEW/NO_GO rows: `docs/FailureTaxonomy.md` (DQ / LD / IN).
-
-**Inference cache (design)** for large corpora without multithreading: `docs/InferenceResultCache.md`.
 
 ### Semantic policy layer (`eval_settings.semantic_policy`)
 
