@@ -39,13 +39,17 @@ def _contract_meta(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _signals_for_row(row: Dict[str, Any]) -> Dict[str, Any]:
-    contract = row.get("contract") if isinstance(row.get("contract"), dict) else {}
-    contract = contract if isinstance(contract, dict) else {}
+    contract_raw = row.get("contract")
+    contract: Dict[str, Any] = contract_raw if isinstance(contract_raw, dict) else {}
     meta = _contract_meta(row)
-    loopback = row.get("loopback") if isinstance(row.get("loopback"), dict) else {}
-    inference_output = (
-        row.get("inference_output") if isinstance(row.get("inference_output"), dict) else {}
+    loopback_raw = row.get("loopback")
+    loopback: Dict[str, Any] = loopback_raw if isinstance(loopback_raw, dict) else {}
+    inference_output_raw = row.get("inference_output")
+    inference_output: Dict[str, Any] = (
+        inference_output_raw if isinstance(inference_output_raw, dict) else {}
     )
+    decision_raw = row.get("decision")
+    decision: Dict[str, Any] = decision_raw if isinstance(decision_raw, dict) else {}
 
     return {
         "semantic_errors": _semantic_errors(row),
@@ -62,9 +66,7 @@ def _signals_for_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "fallback_used_count": int(loopback.get("fallback_used_count", 0) or 0),
         "loopback_stop_reason": str(loopback.get("stop_reason", "")),
         "release_decision": str(inference_output.get("final_decision", "NO_GO")).upper(),
-        "error_code": str(inference_output.get("error_code", row.get("decision", {}).get("code", "")))
-        if isinstance(row.get("decision"), dict)
-        else str(inference_output.get("error_code", "")),
+        "error_code": str(inference_output.get("error_code", decision.get("code", ""))),
     }
 
 
