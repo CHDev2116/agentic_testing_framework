@@ -81,7 +81,7 @@ dependencies = [
 dev = [
     "pytest",
     "pytest-cov",
-    "ruff",
+    "ruff==0.15.12",
     "mypy",
 ]
 
