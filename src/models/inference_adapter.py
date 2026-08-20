@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from models.contract_repair import ContractRepairSettings, run_contract_inference_loop
 from models.contracts import InferenceOutput
+from models.inference_cache import CachingInferenceEngine, InferenceCache, InferenceCacheSettings, stable_json_sha256
 from models.llama_quantizer import LlamaQuantizer
 
 logger = logging.getLogger(__name__)
@@ -400,17 +401,70 @@ def build_inference_engine(config: Dict[str, Any]):
     backend = str(inference_cfg.get("backend", "simulated")).lower()
 
     if backend == "llama_cpp":
-        return LlamaCppInferenceEngine(
+        base_engine: Any = LlamaCppInferenceEngine(
             thresholds=thresholds,
             inference_cfg=inference_cfg,
             replay_mode=replay_mode,
         )
-    if backend == "ollama_vision":
-        return OllamaVisionInferenceEngine(
+    elif backend == "ollama_vision":
+        base_engine = OllamaVisionInferenceEngine(
             thresholds=thresholds,
             inference_cfg=inference_cfg,
             replay_mode=replay_mode,
         )
-    if backend == "mock_api":
-        return MockAPIInferenceEngine(thresholds=thresholds, inference_cfg=inference_cfg)
-    return SimulatedInferenceEngine(thresholds=thresholds)
+    elif backend == "mock_api":
+        base_engine = MockAPIInferenceEngine(thresholds=thresholds, inference_cfg=inference_cfg)
+    else:
+        base_engine = SimulatedInferenceEngine(thresholds=thresholds)
+
+    cache_cfg = runtime_cfg.get("inference_cache", {}) or {}
+    cache_enabled = bool(cache_cfg.get("enabled", False))
+    cache_dir = str(cache_cfg.get("dir", ".cache/inference"))
+
+    # In replay mode we want deterministic truth from record/replay; bypass cache entirely.
+    if cache_enabled and replay_mode == "off":
+        contract_settings = ContractRepairSettings.from_inference_cfg(
+            inference_cfg, replay_mode=replay_mode
+        )
+
+        # Provider identity changes output format/prompt/model; keep that out of rules_tag.
+        if backend == "ollama_vision":
+            provider_cfg = inference_cfg.get("ollama", {}) or {}
+        elif backend == "llama_cpp":
+            provider_cfg = inference_cfg.get("llama_cpp", {}) or {}
+        elif backend == "mock_api":
+            provider_cfg = inference_cfg.get("mock_api", {}) or {}
+        else:
+            provider_cfg = {}
+
+        backend_id = f"{backend}|{stable_json_sha256(provider_cfg)}"
+
+        rules_tag = stable_json_sha256(
+            {
+                "thresholds": thresholds,
+                "contract": {
+                    "max_json_repair_attempts": contract_settings.max_json_repair_attempts,
+                    "strict_contract": contract_settings.strict_contract,
+                    "repair_on_empty_dict": contract_settings.repair_on_empty_dict,
+                    "repair_prompt_suffix": contract_settings.repair_prompt_suffix,
+                    "replay_mode": contract_settings.replay_mode,
+                },
+            }
+        )
+
+        cache_settings = InferenceCacheSettings(enabled=True, cache_dir=cache_dir)
+        cache = InferenceCache(cache_settings, logger_=logger)
+
+        return CachingInferenceEngine(
+            base_engine=base_engine,
+            cache=cache,
+            cache_context={
+                "backend_id": backend_id,
+                "rules_tag": rules_tag,
+                "replay_mode": replay_mode,
+                "version_tag": cache_settings.version_tag,
+            },
+            logger_=logger,
+        )
+
+    return base_engine

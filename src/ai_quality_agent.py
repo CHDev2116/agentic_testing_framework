@@ -40,6 +40,7 @@ from eval.benchmark_evaluator import (
     generate_benchmark_insights,
     get_release_decision,
 )
+from eval.critique_agent import run_critique
 from models.async_inference import predict_quality_async
 from models.contracts import AgentInferenceOutput, AgentStep
 from models.contracts import LoopbackPlan
@@ -539,6 +540,15 @@ def save_overhead_report(overhead_data, output_folder):
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(overhead_data, f, indent=4, ensure_ascii=False)
     logger.info("Overhead report saved to: %s", file_path)
+    return str(file_path)
+
+
+def save_critique_summary(critique_data, report_path):
+    report_dir = Path(report_path).resolve().parent
+    file_path = report_dir / f"critique_summary_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(critique_data, f, indent=4, ensure_ascii=False)
+    logger.info("Critique summary saved to: %s", file_path)
     return str(file_path)
 
 
@@ -1791,6 +1801,8 @@ def _finalize_batch_report(
     batch_report["ranking"] = rankings
 
     report_path = save_batch_report(batch_report, config["folders"]["output"])
+    critique_summary = run_critique(batch_report, config)
+    critique_summary_path = save_critique_summary(critique_summary, report_path)
     performance_report_path = None
     overhead_report_path = None
     if performance_analysis:
@@ -1844,6 +1856,7 @@ def _finalize_batch_report(
     return {
         "profile": config_profile,
         "report_path": report_path,
+        "critique_summary_path": critique_summary_path,
         "performance_report_path": performance_report_path,
         "overhead_report_path": overhead_report_path,
         "summary": batch_report["summary"],
