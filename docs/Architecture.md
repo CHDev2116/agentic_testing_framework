@@ -275,6 +275,61 @@ When enabled, rows with `REVIEW` may receive a second opinion; overrides are tag
 
 When `contract.max_json_repair_attempts > 0`, `contract_meta.repair_audit` records each round’s prompt/output snapshots and flags `unstable_repair` when decisions flip across repair (e.g. `Under-exposed -> Optimal`). See `docs/RepairAudit.md` and `tests/test_repair_stability_gate.py`.
 
+## Inference cache (`runtime.inference_cache`)
+
+Full reference: [`docs/InferenceCache.md`](InferenceCache.md) (on-disk schema, key derivation, invalidation).
+
+Inference cache is a **dev-loop accelerator**, not a CI truth source.
+
+- Implementation: `src/models/inference_cache.py`
+- Integration point: `build_inference_engine(...)` in `src/models/inference_adapter.py`
+- Scope: caches the **normalized inference output dict** returned by a provider wrapper
+
+Suggested config:
+
+```json
+{
+  "runtime": {
+    "inference_cache": {
+      "enabled": true,
+      "dir": ".cache/inference"
+    }
+  }
+}
+```
+
+Design notes:
+
+- Cache keys include image bytes hash, metrics hash, backend/provider identity, and contract/rules hash.
+- Replay stays authoritative: `runtime.replay_mode != off` bypasses cache entirely.
+- The cache is best-effort only; key build / read / write failures do **not** fail the inference path.
+- Use this to shorten repeated local runs against `ollama_vision`, `llama_cpp`, or `mock_api`; do not treat it as a replacement for replay traces or oracle regression.
+
+## Critique summary (`critique_summary_*.json`)
+
+Full reference: [`docs/CritiqueAgent.md`](CritiqueAgent.md) (output schema, row issue rules, batch recommendations).
+
+Critique summary is a **recommendation layer** that runs after batch reporting.
+
+- Implementation: `src/eval/critique_agent.py`
+- Script entrypoint: `scripts/run_critique_agent.py`
+- Automatic generation: batch runs now emit a sibling `critique_summary_*.json` beside `batch_report_*.json`
+
+This layer is intentionally **non-blocking**:
+
+- it does **not** change stored row decisions
+- it does **not** override `release_decision`
+- it does **not** replace `arbitrator`, semantic asserts, or oracle regression
+
+Instead, it summarizes high-signal review candidates:
+
+- semantic drift (`SEMANTIC_ERRORS_WITH_GO`, `INVALID_LABEL_DETECTED`)
+- contract instability (`UNSTABLE_REPAIR_TRIGGERED`, `STRICT_FALLBACK_BLOCKED`)
+- planner instability (`PLANNER_FALLBACK_USED`, `PLANNER_FALLBACK_FREQUENT`)
+- batch recommendations such as `add_oracle_cases`, `review_contract_policy`, and `investigate_planner`
+
+Design intent: help humans decide **what to freeze into the oracle corpus next** without turning an LLM-like reviewer into the ground-truth judge.
+
 ## Performance monitoring (`src/util/monitor_performance.py`)
 
 Decorators (`monitor_performance`, `async_monitor_performance`) **always log wall-clock time** (low overhead). **Peak allocation tracking uses Python’s `tracemalloc`**, which adds cost; it is therefore **off by default** so extremely hot paths (very high call rates) are not penalized.

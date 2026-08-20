@@ -641,18 +641,6 @@ def classify_loopback_signal(ai_result):
     return "other"
 
 
-def decide_loopback_action(signal, engine_metrics, thresholds_cfg, loopback_guard_cfg):
-    planner = SimulatedLoopbackPlanner()
-    plan = planner.plan(
-        signal=signal,
-        engine_metrics=engine_metrics,
-        thresholds_cfg=thresholds_cfg,
-        loopback_guard_cfg=loopback_guard_cfg,
-        attempt_history=[],
-    )
-    return plan.action, plan.stop_reason
-
-
 def plan_next_action(
     *,
     signal: str,
@@ -660,6 +648,7 @@ def plan_next_action(
     thresholds_cfg: Dict[str, Any],
     loopback_guard_cfg: Dict[str, Any],
 ):
+    """Thin helper for tests / ad-hoc calls; batch path uses create_loopback_planner()."""
     planner = SimulatedLoopbackPlanner()
     return planner.plan(
         signal=signal,

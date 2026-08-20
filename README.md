@@ -141,7 +141,7 @@ Optional: add a short screen recording as `assets/demo.gif` and reference it her
 - **Planner mode**: `runtime.loopback_planner.mode` supports `simulated` (default) and `llm` (with automatic fallback to simulated on planner errors).
 - **Planner health check**: when planner mode is `llm`, startup runs endpoint health check by default (`require_healthy_on_startup=true`) and fails fast if unreachable. Use `--planner-skip-health-check` only for controlled fallback experiments.
 - **Retention**: auto-clean for `batch_report_*.json` and `error_report_*.json` after 14 days.
-- **CI scope**: Ruff on `src` + `tests` + `app.py` + `test_connection.py`; **mypy** on `src` then on `app.py` / `test_connection.py` with `MYPYPATH=src`; pytest with coverage (including **`--cov-fail-under=34`**). Tests emphasize the **release decision path** (arbitration, inference result normalization, loopback integration) and **golden checks** for batch ranking, release gates, log stability windows, Pillow-based vision metrics, and OpenCV exposure validation—see `tests/`.
+- **CI scope**: Ruff on `src` + `tests` + `app.py` + `test_connection.py`; **mypy** on `src` then on `app.py` / `test_connection.py` with `MYPYPATH=src`; pytest with coverage (including **`--cov-fail-under=34`**). Tests emphasize the **release decision path** (arbitration, inference result normalization, loopback integration) and **golden checks** for batch ranking, release gates, log stability windows, and Pillow-based vision metrics—see `tests/`.
 
 </details>
 
@@ -231,6 +231,49 @@ Behavior:
 - `runtime.replay_mode=replay` disables repair (same as CI replay smoke).
 
 Semantic asserts (P2) run by default via `eval_settings.semantic_asserts_enabled` (default true). Row-level issues appear in `contract.semantic_errors`; batch summary includes `semantic_assert_fail_count` and `review_breakdown.SEMANTIC_ASSERT_MISMATCH` when arbitration input is overridden.
+
+Inference cache (dev accelerator):
+
+See [`docs/InferenceCache.md`](docs/InferenceCache.md) for full schema, key derivation, and invalidation rules.
+
+Enable file-backed caching under `runtime.inference_cache` to reuse **normalized inference outputs** across repeated local runs:
+
+```json
+{
+  "runtime": {
+    "inference_cache": {
+      "enabled": true,
+      "dir": ".cache/inference"
+    }
+  }
+}
+```
+
+Behavior:
+
+- Cache applies at the provider boundary (`build_inference_engine`) and stores the **post-normalization** inference dict, not raw HTTP bodies.
+- Cache keys include image bytes hash, metrics hash, backend/provider config hash, and contract/rules hash.
+- `runtime.replay_mode != off` bypasses the cache so replay remains the source of truth.
+- Best fit: local iteration on `ollama_vision`, `llama_cpp`, or `mock_api`; keep CI and replay truth on uncached paths.
+
+Critique summary (rule-based review artifact):
+
+See [`docs/CritiqueAgent.md`](docs/CritiqueAgent.md) for the full output schema and rule tables.
+
+Each batch run now writes a sibling `critique_summary_*.json` beside the `batch_report_*.json`. The critique layer is **non-blocking**: it does not change `GO` / `REVIEW` / `NO_GO`, but it highlights high-signal rows for review and oracle expansion.
+
+Generate a critique summary for an existing batch report:
+
+```bash
+python scripts/run_critique_agent.py --profile dev
+python scripts/run_critique_agent.py --profile dev --batch-report results/dev/batch_report_YYYYMMDD_HHMMSS.json
+```
+
+Critique output includes:
+
+- row-level `issues` such as semantic drift, unstable repair, or planner fallback usage
+- `oracle_suggestion` hints for rows worth freezing into `tests/regression/oracle_cases.jsonl`
+- batch-level `overall_recommendations` such as `add_oracle_cases`, `review_contract_policy`, and `investigate_planner`
 
 Oracle historical regression (frozen release semantics):
 
@@ -335,6 +378,8 @@ Workflow reference: `.github/workflows/ci.yml`
 - Architecture and provider details: [`docs/Architecture.md`](docs/Architecture.md)
 - Oracle regression, semantic snapshots, repair audit: `tests/regression/README.md`, `docs/RegressionVersioning.md`, `docs/RepairAudit.md`
 - Failure triage (DQ / LD / IN): `docs/FailureTaxonomy.md`
+- Inference cache (schema, keys, invalidation): [`docs/InferenceCache.md`](docs/InferenceCache.md)
+- Critique agent (output schema, rule tables): [`docs/CritiqueAgent.md`](docs/CritiqueAgent.md)
 - For benchmark, repeatability, and reliability narratives, use docs + report artifacts under `results/`.
 
 **Capabilities (current)**
@@ -344,6 +389,8 @@ Workflow reference: `.github/workflows/ci.yml`
 - Repeatability / performance / overhead analysis
 - Deterministic replay (JSONL planner trace + CI smoke)
 - Contract hardening (JSON repair, semantic asserts, oracle regression, `repair_audit`)
+- File-backed inference cache for repeated local runs (`runtime.inference_cache`)
+- Rule-based critique summaries for batch review / oracle expansion (`critique_summary_*.json`)
 - Adaptive backoff for async HTTP (`docs/AdaptiveBackoff.md`, config-gated)
 - Optional LLM judge on `REVIEW` rows (`eval_settings.llm_judge`, default off)
 
