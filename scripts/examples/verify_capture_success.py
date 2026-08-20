@@ -1,5 +1,10 @@
+"""Example: temp JPEG → vision_math metrics → simulated 4-bit decision (not used by CLI/CI)."""
+
+from __future__ import annotations
+
 import logging
 import os
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -7,8 +12,11 @@ from typing import Any, Optional
 
 from PIL import Image
 
-from engine.vision_math import calculate_metrics
-from util.cli_logging import configure_cli_logging
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src"))
+
+from engine.vision_math import calculate_metrics  # noqa: E402
+from util.cli_logging import configure_cli_logging  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

@@ -88,9 +88,6 @@ dev = [
 [tool.setuptools]
 py-modules = [
     "ai_quality_agent",
-    "mock_device",
-    "verify_capture_success",
-    "test_failure_memory_retrieval",
 ]
 
 [tool.setuptools.package-dir]

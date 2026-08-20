@@ -1,7 +1,16 @@
-import logging
+"""Example: seed + query FailureMemoryStore (read path demo; batch write is unchanged)."""
 
-from util.cli_logging import configure_cli_logging
-from util.failure_memory import FailureMemoryStore
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src"))
+
+from util.cli_logging import configure_cli_logging  # noqa: E402
+from util.failure_memory import FailureMemoryStore  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

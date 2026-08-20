@@ -1,8 +1,17 @@
+"""Example: mock mobile capture monitoring + AI quality gate (not used by CLI/CI)."""
+
+from __future__ import annotations
+
 import logging
 import random
+import sys
 import time
+from pathlib import Path
 
-from util.cli_logging import configure_cli_logging
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src"))
+
+from util.cli_logging import configure_cli_logging  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

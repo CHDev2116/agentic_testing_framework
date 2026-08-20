@@ -189,7 +189,7 @@ python3 src/ai_quality_agent.py --profile dev --async-batch --async-backend-heal
 python3 src/ai_quality_agent.py --profile dev --async-batch --loopback-planner llm
 python3 src/ai_quality_agent.py --profile dev --async-batch --async-skip-backend-health-check
 python3 src/ai_quality_agent.py --profile dev --async-batch --parallel-metrics
-python3 src/test_failure_memory_retrieval.py
+python3 scripts/examples/query_failure_memory.py
 ```
 
 Deterministic replay (planner trace):
